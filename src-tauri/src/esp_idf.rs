@@ -168,7 +168,7 @@ fn detect_host_python() -> Result<String, String> {
 }
 
 /// Resolve the ESP-IDF and tools paths (runtime, bundled, or dev fallback).
-/// Priority: env override > user config > runtime > bundled.
+/// Priority: env override > user config > portable toolchain > runtime > bundled.
 fn resolve_idf_paths(app_handle: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
     // 1. Environment variable override
     if let Some((idf_path, tools_path)) = resolve_env_override() {
@@ -184,6 +184,20 @@ fn resolve_idf_paths(app_handle: &AppHandle) -> Result<(PathBuf, PathBuf), Strin
         }
     }
 
+    // 3. Portable toolchain (downloaded via download_portable_toolchain)
+    //    ตำแหน่ง: %APPDATA%/vibeKidbright/toolchain/
+    if let Ok(toolchain_dir) = portable_toolchain_dir(app_handle) {
+        if toolchain_dir.exists() {
+            if let Some(idf_path) = find_idf_in_toolchain(&toolchain_dir) {
+                let tools_path = toolchain_dir.join(".espressif");
+                if let Ok(paths) = canonical_idf_pair(&idf_path, &tools_path) {
+                    return Ok(paths);
+                }
+            }
+        }
+    }
+
+    // 4. Runtime IDF (installed via setup_esp_idf / git clone)
     if let Some(runtime_idf) = maybe_find_runtime_idf(app_handle)? {
         let tools = runtime_root_dir(app_handle)?.join(".espressif");
         if let Ok(paths) = canonical_idf_pair(&runtime_idf, &tools) {
@@ -212,7 +226,7 @@ fn resolve_idf_paths(app_handle: &AppHandle) -> Result<(PathBuf, PathBuf), Strin
             Ok(paths)
         } else {
             Err(
-                "ESP-IDF not found. Run setup_esp_idf() on first launch to install platform-specific tools."
+                "ESP-IDF not found. Run download_portable_toolchain() on first launch to install the portable toolchain."
                     .to_string(),
             )
         }
@@ -1032,4 +1046,323 @@ pub async fn send_serial_input(input: String) -> Result<(), String> {
 pub async fn stop_serial_monitor() -> Result<String, String> {
     stop_serial_monitor_internal();
     Ok("Serial monitor disconnected".to_string())
+}
+
+// ── Portable Toolchain (ZIP-based) ──────────────────────────────────────────
+//
+// แนวคิด "Portable Toolchain":
+//   คุณ Kao เตรียม ZIP ที่มี esp-idf + .espressif (Python env + toolchains)
+//   อัปโหลดไว้ใน GitHub Releases เดียวกับตัวติดตั้งแอป
+//
+//   GitHub Release "v1.0.0":
+//     ├── vibeKidbright_1.0.0_x64-setup.exe   ← ตัวติดตั้งแอป
+//     └── kb_toolchain_v1.zip                  ← Toolchain ZIP
+//
+//   แอปใช้ GitHub API ดึง URL อัตโนมัติจาก latest release
+//   → ไม่ต้อง hardcode version number ในโค้ด
+//
+// โครงสร้างใน ZIP ที่คาดหวัง:
+//   (root ของ ZIP)
+//   ├── esp-idf-v5.x/          ← ชื่อขึ้นต้นด้วย "esp-idf", มี tools/idf.py
+//   └── .espressif/            ← Python venv + xtensa toolchain
+//       ├── python_env/
+//       └── tools/
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// ชื่อ GitHub repo ในรูปแบบ "owner/repo"
+/// ⚠️ แก้ให้ตรงกับ repo จริงของคุณ Kao ก่อน deploy!
+const GITHUB_REPO: &str = "your-github-username/vibeKidbright";
+
+/// ชื่อไฟล์ asset ของ toolchain ZIP ใน GitHub Releases
+/// ต้องตรงกับชื่อไฟล์ที่คุณ Kao อัปโหลดไว้จริงๆ
+const TOOLCHAIN_ASSET_NAME: &str = "kb_toolchain_v1.zip";
+
+/// Event ที่ emit ไปยัง frontend เพื่อแสดง progress การดาวน์โหลด
+#[derive(serde::Serialize, Clone)]
+pub struct ToolchainProgress {
+    pub stage: String,       // "downloading" | "extracting" | "done" | "error"
+    pub percent: f32,        // 0.0 – 100.0
+    pub message: String,
+}
+
+/// โฟลเดอร์ที่เก็บ portable toolchain
+fn portable_toolchain_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    Ok(app_data_dir.join("toolchain"))
+}
+
+/// ตรวจสอบว่า portable toolchain ถูกติดตั้งแล้วหรือยัง
+/// คืนค่า JSON ที่บอกสถานะ + path ที่เจอ (ถ้ามี)
+#[tauri::command]
+pub async fn get_toolchain_status(app_handle: AppHandle) -> Result<serde_json::Value, String> {
+    let toolchain_dir = portable_toolchain_dir(&app_handle)?;
+
+    if !toolchain_dir.exists() {
+        return Ok(serde_json::json!({
+            "installed": false,
+            "path": null,
+            "idf_path": null,
+            "tools_path": null,
+            "message": "Portable toolchain not found. Call download_portable_toolchain() to install."
+        }));
+    }
+
+    // ค้นหา esp-idf-* โฟลเดอร์ภายใน toolchain dir
+    let idf_dir = find_idf_in_toolchain(&toolchain_dir);
+    let tools_dir = toolchain_dir.join(".espressif");
+
+    let idf_ok = idf_dir
+        .as_ref()
+        .map(|p| p.join("tools/idf.py").exists())
+        .unwrap_or(false);
+    let tools_ok = tools_dir.exists();
+
+    if idf_ok && tools_ok {
+        Ok(serde_json::json!({
+            "installed": true,
+            "path": toolchain_dir.to_string_lossy(),
+            "idf_path": idf_dir.map(|p| p.to_string_lossy().to_string()),
+            "tools_path": tools_dir.to_string_lossy(),
+            "message": "Portable toolchain is ready."
+        }))
+    } else {
+        Ok(serde_json::json!({
+            "installed": false,
+            "path": toolchain_dir.to_string_lossy(),
+            "idf_path": null,
+            "tools_path": null,
+            "message": format!(
+                "Toolchain directory exists but is incomplete. idf.py found: {}, .espressif found: {}",
+                idf_ok, tools_ok
+            )
+        }))
+    }
+}
+
+/// ดาวน์โหลด ZIP จาก url แล้วแตกไฟล์ลงใน portable_toolchain_dir
+/// emit "toolchain-progress" event ให้ frontend แสดง progress bar
+///
+/// Parameters:
+///   url      – URL ของ ZIP เช่น "https://github.com/.../releases/download/v1/kb_compiler_v1.zip"
+///   force    – ถ้า true จะลบโฟลเดอร์เดิมแล้วโหลดใหม่
+#[tauri::command]
+pub async fn download_portable_toolchain(
+    app_handle: AppHandle,
+    url: String,
+    force: Option<bool>,
+) -> Result<String, String> {
+    let toolchain_dir = portable_toolchain_dir(&app_handle)?;
+    let should_force = force.unwrap_or(false);
+
+    // ถ้ามีอยู่แล้วและไม่ได้ force → ข้ามได้เลย
+    if toolchain_dir.exists() && !should_force {
+        let idf_dir = find_idf_in_toolchain(&toolchain_dir);
+        let tools_dir = toolchain_dir.join(".espressif");
+        if idf_dir.map(|p| p.join("tools/idf.py").exists()).unwrap_or(false)
+            && tools_dir.exists()
+        {
+            return Ok(format!(
+                "Toolchain already installed at {}",
+                toolchain_dir.display()
+            ));
+        }
+    }
+
+    // ลบโฟลเดอร์เก่าถ้า force
+    if should_force && toolchain_dir.exists() {
+        std::fs::remove_dir_all(&toolchain_dir)
+            .map_err(|e| format!("Failed to remove existing toolchain: {}", e))?;
+    }
+
+    std::fs::create_dir_all(&toolchain_dir)
+        .map_err(|e| format!("Failed to create toolchain dir: {}", e))?;
+
+    // ── ส่วนที่ 1: ดาวน์โหลด ZIP ──────────────────────────────────────────
+    emit_progress(&app_handle, "downloading", 0.0, "Connecting to server...");
+
+    let zip_path = toolchain_dir.join("__download__.zip");
+    {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3600)) // 1 ชั่วโมง timeout
+            .build()
+            .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to connect to {}: {}", url, e))?;
+
+        if !response.status().is_success() {
+            return Err(format!(
+                "HTTP error {}: {}",
+                response.status(),
+                url
+            ));
+        }
+
+        let total_size = response.content_length();
+        let mut downloaded: u64 = 0;
+        let mut file = tokio::fs::File::create(&zip_path)
+            .await
+            .map_err(|e| format!("Failed to create temp zip file: {}", e))?;
+
+        use futures::StreamExt;
+        let mut stream = response.bytes_stream();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("Download error: {}", e))?;
+            tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+                .await
+                .map_err(|e| format!("Failed to write chunk: {}", e))?;
+            downloaded += chunk.len() as u64;
+
+            if let Some(total) = total_size {
+                let pct = (downloaded as f32 / total as f32) * 50.0; // 0-50% = downloading
+                let mb_done = downloaded / 1_048_576;
+                let mb_total = total / 1_048_576;
+                emit_progress(
+                    &app_handle,
+                    "downloading",
+                    pct,
+                    &format!("Downloading... {}/{} MB", mb_done, mb_total),
+                );
+            } else {
+                let mb_done = downloaded / 1_048_576;
+                emit_progress(
+                    &app_handle,
+                    "downloading",
+                    25.0,
+                    &format!("Downloading... {} MB", mb_done),
+                );
+            }
+        }
+
+        tokio::io::AsyncWriteExt::flush(&mut file)
+            .await
+            .map_err(|e| format!("Failed to flush file: {}", e))?;
+    }
+
+    emit_progress(&app_handle, "extracting", 50.0, "Download complete. Extracting...");
+
+    // ── ส่วนที่ 2: แตก ZIP ──────────────────────────────────────────────────
+    let zip_path_clone = zip_path.clone();
+    let dest_dir = toolchain_dir.clone();
+    let app_for_extract = app_handle.clone();
+
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let zip_file = std::fs::File::open(&zip_path_clone)
+            .map_err(|e| format!("Failed to open zip: {}", e))?;
+
+        let mut archive = zip::ZipArchive::new(zip_file)
+            .map_err(|e| format!("Failed to read zip archive: {}", e))?;
+
+        let total_files = archive.len();
+        for i in 0..total_files {
+            let mut entry = archive
+                .by_index(i)
+                .map_err(|e| format!("Failed to read zip entry {}: {}", i, e))?;
+
+            let out_path = match entry.enclosed_name() {
+                Some(p) => dest_dir.join(p),
+                None => continue,
+            };
+
+            if entry.is_dir() {
+                std::fs::create_dir_all(&out_path)
+                    .map_err(|e| format!("Failed to create dir {:?}: {}", out_path, e))?;
+            } else {
+                if let Some(parent) = out_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("Failed to create parent dir: {}", e))?;
+                }
+                let mut out_file = std::fs::File::create(&out_path)
+                    .map_err(|e| format!("Failed to create file {:?}: {}", out_path, e))?;
+                std::io::copy(&mut entry, &mut out_file)
+                    .map_err(|e| format!("Failed to write file {:?}: {}", out_path, e))?;
+
+                // Set executable bit on Unix (Linux/macOS)
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Some(mode) = entry.unix_mode() {
+                        let _ = std::fs::set_permissions(
+                            &out_path,
+                            std::fs::Permissions::from_mode(mode),
+                        );
+                    }
+                }
+            }
+
+            // Progress: 50–100%
+            let pct = 50.0 + (i as f32 / total_files as f32) * 50.0;
+            emit_progress(
+                &app_for_extract,
+                "extracting",
+                pct,
+                &format!("Extracting... ({}/{})", i + 1, total_files),
+            );
+        }
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Extract task panicked: {}", e))??;
+
+    // ลบ ZIP temp ทิ้ง
+    let _ = std::fs::remove_file(&zip_path);
+
+    emit_progress(&app_handle, "done", 100.0, "Portable toolchain ready!");
+
+    Ok(format!(
+        "Portable toolchain installed at {}",
+        toolchain_dir.display()
+    ))
+}
+
+/// ลบ portable toolchain ออก (ใช้ถ้าต้องการ reset / reinstall)
+#[tauri::command]
+pub async fn remove_portable_toolchain(app_handle: AppHandle) -> Result<String, String> {
+    let toolchain_dir = portable_toolchain_dir(&app_handle)?;
+    if !toolchain_dir.exists() {
+        return Ok("Toolchain directory does not exist, nothing to remove.".to_string());
+    }
+    std::fs::remove_dir_all(&toolchain_dir)
+        .map_err(|e| format!("Failed to remove toolchain: {}", e))?;
+    Ok(format!(
+        "Portable toolchain removed from {}",
+        toolchain_dir.display()
+    ))
+}
+
+// ── Helper functions for portable toolchain ─────────────────────────────────
+
+fn emit_progress(app_handle: &AppHandle, stage: &str, percent: f32, message: &str) {
+    let _ = app_handle.emit(
+        "toolchain-progress",
+        ToolchainProgress {
+            stage: stage.to_string(),
+            percent,
+            message: message.to_string(),
+        },
+    );
+}
+
+/// ค้นหาโฟลเดอร์ esp-idf-* ภายใน toolchain dir
+fn find_idf_in_toolchain(toolchain_dir: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(toolchain_dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            p.is_dir()
+                && p.file_name()
+                    .map(|n| n.to_string_lossy().starts_with("esp-idf"))
+                    .unwrap_or(false)
+                && p.join("tools/idf.py").exists()
+        })
 }

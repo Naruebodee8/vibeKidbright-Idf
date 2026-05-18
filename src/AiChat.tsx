@@ -47,7 +47,12 @@ function ApplyButton({ onApply, targetFile }: { onApply: () => void, targetFile?
 }
 
 
-function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: string, onInjectCode: (code: string) => void, onApplyToFile?: (filePath: string, code: string) => void }) {
+function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
+    projectDir: string, onInjectCode: (newCode: string) => void;
+    onApplyToFile: (filePath: string, newCode: string) => void;
+    onOpenFile?: (path: string, isKb?: boolean) => void;
+}
+) {
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState("");
     const [isLoading, setIsLoading] = useState(false);
@@ -352,7 +357,12 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                 ? !openrouterApiKey
                 : provider === "google"
                     ? !googleApiKey
-                    : !api_key && !baseUrl.includes("localhost") && !baseUrl.includes("127.0.0.1");
+                    : !api_key &&
+                    !baseUrl.includes("localhost") &&
+                    !baseUrl.includes("127.0.0.1") &&
+                    !baseUrl.match(/\d+\.\d+\.\d+\.\d+/) &&
+                    !baseUrl.includes("192.168.") &&
+                    !baseUrl.includes("10.");
 
         if (missingKey) {
             setShowSettings(true);
@@ -489,9 +499,9 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                     const currentCodeContent = [...codeContent];
 
                     elements.push(
-                        <div key={key++} className="my-2 rounded-lg border border-neutral-700/50 overflow-hidden relative group/code">
-                            <div className="bg-neutral-800 px-3 py-1.5 text-[10px] text-neutral-400 font-mono flex justify-between items-center border-b border-neutral-700/50">
-                                <span>{currentTargetFile ? <><span className="text-red-400 font-bold">{currentTargetFile}</span> <span className="uppercase opacity-50 ml-2">{langMatch}</span></> : <span className="uppercase">{langMatch || "code"}</span>}</span>
+                        <div key={key++} className="my-2 rounded-lg border border-[var(--border-subtle)] overflow-hidden relative group/code">
+                            <div className="bg-[var(--bg-elevated)] px-3 py-1.5 text-[10px] text-[var(--text-secondary)] font-mono flex justify-between items-center border-b border-[var(--border-subtle)]">
+                                <span>{currentTargetFile ? <><span className="text-[var(--accent-400)] font-bold">{currentTargetFile}</span> <span className="uppercase opacity-50 ml-2">{langMatch}</span></> : <span className="uppercase">{langMatch || "code"}</span>}</span>
                                 <ApplyButton
                                     targetFile={currentTargetFile ? currentTargetFile.split('/').pop() : null}
                                     onApply={() => {
@@ -503,7 +513,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                                     }}
                                 />
                             </div>
-                            <pre className="bg-neutral-900/80 p-3 overflow-x-auto text-xs">
+                            <pre className="bg-[var(--bg-base)]/80 p-3 overflow-x-auto text-xs">
                                 <code>{currentCodeContent.join("\n")}</code>
                             </pre>
                         </div>
@@ -522,21 +532,21 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
             } else if (line.startsWith("### ")) {
                 prevLine = line;
                 elements.push(
-                    <h4 key={key++} className="font-bold text-sm mt-3 mb-1 text-red-300">
+                    <h4 key={key++} className="font-bold text-sm mt-3 mb-1 text-[var(--accent-300)]">
                         {line.slice(4)}
                     </h4>
                 );
             } else if (line.startsWith("## ")) {
                 prevLine = line;
                 elements.push(
-                    <h3 key={key++} className="font-bold text-base mt-3 mb-1 text-red-300">
+                    <h3 key={key++} className="font-bold text-base mt-3 mb-1 text-[var(--accent-300)]">
                         {line.slice(3)}
                     </h3>
                 );
             } else if (line.startsWith("# ")) {
                 prevLine = line;
                 elements.push(
-                    <h2 key={key++} className="font-bold text-lg mt-3 mb-1 text-red-300">
+                    <h2 key={key++} className="font-bold text-lg mt-3 mb-1 text-[var(--accent-300)]">
                         {line.slice(2)}
                     </h2>
                 );
@@ -544,7 +554,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                 prevLine = line;
                 elements.push(
                     <div key={key++} className="flex gap-2 ml-2">
-                        <span className="text-red-500">•</span>
+                        <span className="text-[var(--accent-400)]">•</span>
                         <span>{renderInlineCode(line.slice(2))}</span>
                     </div>
                 );
@@ -553,7 +563,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                 const num = line.match(/^(\d+)\. /)?.[1];
                 elements.push(
                     <div key={key++} className="flex gap-2 ml-2">
-                        <span className="text-red-500 font-mono text-xs min-w-[1.2em]">{num}.</span>
+                        <span className="text-[var(--accent-400)] font-mono text-xs min-w-[1.2em]">{num}.</span>
                         <span>{renderInlineCode(line.replace(/^\d+\. /, ""))}</span>
                     </div>
                 );
@@ -564,7 +574,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                 // [FILE:] tag on its own line — render as a subtle label and track as prevLine
                 prevLine = line;
                 elements.push(
-                    <div key={key++} className="text-[10px] text-red-500/70 font-mono mt-2 flex items-center gap-1">
+                    <div key={key++} className="text-[10px] text-[var(--accent-500)]/70 font-mono mt-2 flex items-center gap-1">
                         <span>📄</span>{line}
                     </div>
                 );
@@ -581,11 +591,11 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
             elements.push(
                 <div key={key++} className="my-2 rounded-lg overflow-hidden">
                     {codeLanguage && (
-                        <div className="bg-neutral-700 px-3 py-1 text-[10px] text-neutral-400 font-mono uppercase">
+                        <div className="bg-[var(--bg-overlay)] px-3 py-1 text-[10px] text-[var(--text-secondary)] font-mono uppercase">
                             {codeLanguage}
                         </div>
                     )}
-                    <pre className="bg-neutral-800 p-3 overflow-x-auto text-xs">
+                    <pre className="bg-[var(--bg-elevated)] p-3 overflow-x-auto text-xs">
                         <code>{codeContent.join("\n")}</code>
                     </pre>
                 </div>
@@ -600,7 +610,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
         return parts.map((part, i) => {
             if (part.startsWith("`") && part.endsWith("`")) {
                 return (
-                    <code key={i} className="bg-neutral-700 px-1.5 py-0.5 rounded text-red-300 text-xs font-mono">
+                    <code key={i} className="bg-[var(--bg-elevated)] px-1.5 py-0.5 rounded text-[var(--accent-300)] text-xs font-mono">
                         {part.slice(1, -1)}
                     </code>
                 );
@@ -617,14 +627,14 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
     };
 
     return (
-        <div className="flex flex-col h-full bg-neutral-950">
+        <div className="flex flex-col h-full bg-[var(--bg-base)]">
             {/* Header */}
-            <div className="h-10 border-b border-neutral-800 flex items-center justify-between px-4 bg-neutral-900/80 backdrop-blur-sm shrink-0">
+            <div className="h-10 border-b border-[var(--border-subtle)] flex items-center justify-between px-4 bg-[var(--bg-base)]/80 backdrop-blur-sm shrink-0">
                 <div className="flex items-center gap-2">
                     <div className="w-5 h-5 rounded bg-gradient-to-br from-violet-500 to-rose-600 flex items-center justify-center text-[10px] font-bold text-white shadow-lg shadow-violet-500/20">
                         AI
                     </div>
-                    <span className="text-xs font-bold text-neutral-300 tracking-wide">
+                    <span className="text-xs font-bold text-[var(--text-primary)] tracking-wide">
                         Vibe Coder
                     </span>
                     {activeModelBadge ? (
@@ -634,7 +644,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                     ) : (
                         <span className={`text-[8px] px-1.5 py-0.5 rounded font-bold uppercase ${provider === "openai" ? "bg-violet-500/10 text-violet-400" :
                             provider === "openrouter" ? "bg-orange-500/10 text-orange-400" :
-                                provider === "google" ? "bg-red-500/10 text-red-400" :
+                                provider === "google" ? "bg-blue-500/10 text-[var(--accent-400)]" :
                                     "bg-emerald-500/10 text-emerald-400"
                             }`}>
                             {provider === "openai" ? "Cloud" : provider === "openrouter" ? "OpenRouter" : provider === "google" ? "Google AI" : "Local"}
@@ -644,7 +654,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                 <div className="flex items-center gap-2">
                     <button
                         onClick={createNewChat}
-                        className="text-neutral-500 hover:text-emerald-400 transition-colors"
+                        className="text-[var(--text-muted)] hover:text-emerald-400 transition-colors"
                         title="➕ แชทใหม่"
                     >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -653,7 +663,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                     </button>
                     <button
                         onClick={() => setShowHistory(true)}
-                        className="text-neutral-500 hover:text-red-400 transition-colors"
+                        className="text-[var(--text-muted)] hover:text-[var(--accent-400)] transition-colors"
                         title="🕒 ประวัติแชท"
                     >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -662,17 +672,17 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                     </button>
                     <button
                         onClick={clearChat}
-                        className="text-neutral-500 hover:text-rose-400 transition-colors"
+                        className="text-[var(--text-muted)] hover:text-rose-400 transition-colors"
                         title="🗑️ ล้างข้อความ"
                     >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                         </svg>
                     </button>
-                    <div className="w-px h-4 bg-neutral-700 mx-1"></div>
+                    <div className="w-px h-4 bg-[var(--bg-overlay)] mx-1"></div>
                     <button
                         onClick={() => setShowSettings(true)}
-                        className="text-neutral-500 hover:text-violet-400 transition-colors"
+                        className="text-[var(--text-muted)] hover:text-violet-400 transition-colors"
                         title="Settings"
                     >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -686,24 +696,24 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
             {/* History Modal */}
             {showHistory && (
                 <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onClick={(e) => { if (e.target === e.currentTarget) setShowHistory(false) }}>
-                    <div className="bg-neutral-800 border border-neutral-700 rounded-xl p-6 w-96 shadow-2xl overflow-y-auto max-h-[90vh]">
+                    <div className="bg-[var(--bg-elevated)] border border-[var(--border-normal)] rounded-xl p-6 w-96 shadow-2xl overflow-y-auto max-h-[90vh]">
                         <div className="flex items-center justify-between mb-4">
-                            <h3 className="text-sm font-bold text-neutral-200">ประวัติแชท (Chat History)</h3>
-                            <button onClick={() => setShowHistory(false)} className="text-neutral-500 hover:text-neutral-300">
+                            <h3 className="text-sm font-bold text-[var(--text-primary)]">ประวัติแชท (Chat History)</h3>
+                            <button onClick={() => setShowHistory(false)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]">
                                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                             </button>
                         </div>
                         <div className="space-y-2">
                             {sessions.length === 0 ? (
-                                <p className="text-xs text-neutral-500 text-center py-4">ไม่มีประวัติการแชท</p>
+                                <p className="text-xs text-[var(--text-muted)] text-center py-4">ไม่มีประวัติการแชท</p>
                             ) : (
                                 sessions.sort((a, b) => b.updatedAt - a.updatedAt).map(session => (
                                     <button
                                         key={session.id}
                                         onClick={() => loadSession(session.id)}
                                         className={`w-full text-left p-3 rounded-lg border transition-colors ${currentSessionId === session.id
-                                                ? "bg-violet-600/20 border-violet-500/50 text-violet-300"
-                                                : "bg-neutral-900/50 border-neutral-700 text-neutral-400 hover:bg-neutral-700 hover:text-neutral-200"
+                                            ? "bg-violet-600/20 border-violet-500/50 text-violet-300"
+                                            : "bg-[var(--bg-surface)]/50 border-[var(--border-normal)] text-[var(--text-secondary)] hover:bg-[var(--bg-overlay)] hover:text-[var(--text-primary)]"
                                             }`}
                                     >
                                         <div className="font-medium text-sm truncate">{session.title}</div>
@@ -721,34 +731,34 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
             {/* Settings Modal */}
             {showSettings && (
                 <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-                    <div className="bg-neutral-800 border border-neutral-700 rounded-xl p-6 w-96 shadow-2xl overflow-y-auto max-h-[90vh]">
-                        <h3 className="text-sm font-bold text-neutral-200 mb-4">
+                    <div className="bg-[var(--bg-elevated)] border border-[var(--border-normal)] rounded-xl p-6 w-96 shadow-2xl overflow-y-auto max-h-[90vh]">
+                        <h3 className="text-sm font-bold text-[var(--text-primary)] mb-4">
                             AI Provider Settings
                         </h3>
 
                         {/* Provider Switcher Tabs */}
-                        <div className="flex bg-neutral-900 p-1 rounded-lg mb-6 border border-neutral-700 gap-1">
+                        <div className="flex bg-[var(--bg-base)] p-1 rounded-lg mb-6 border border-[var(--border-normal)] gap-1">
                             <button
                                 onClick={() => handleProviderChange("openai")}
-                                className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-all ${providerInput === "openai" ? "bg-violet-600 text-white shadow-lg" : "text-neutral-500 hover:text-neutral-300"}`}
+                                className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-all ${providerInput === "openai" ? "bg-violet-600 text-white shadow-lg" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
                             >
                                 Cloud (OpenAI)
                             </button>
                             <button
                                 onClick={() => handleProviderChange("openrouter")}
-                                className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-all ${providerInput === "openrouter" ? "bg-orange-500 text-white shadow-lg shadow-orange-500/20" : "text-neutral-500 hover:text-neutral-300"}`}
+                                className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-all ${providerInput === "openrouter" ? "bg-orange-500 text-white shadow-lg shadow-orange-500/20" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
                             >
                                 OpenRouter
                             </button>
                             <button
                                 onClick={() => handleProviderChange("local")}
-                                className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-all ${providerInput === "local" ? "bg-emerald-600 text-white shadow-lg" : "text-neutral-500 hover:text-neutral-300"}`}
+                                className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-all ${providerInput === "local" ? "bg-emerald-600 text-white shadow-lg" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
                             >
                                 Local
                             </button>
                             <button
                                 onClick={() => handleProviderChange("google")}
-                                className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-all ${providerInput === "google" ? "bg-red-600 text-white shadow-lg shadow-red-500/20" : "text-neutral-500 hover:text-neutral-300"}`}
+                                className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-all ${providerInput === "google" ? "bg-red-600 text-white shadow-lg shadow-red-500/20" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
                             >
                                 Google
                             </button>
@@ -758,7 +768,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                             {providerInput === "openai" && (
                                 <div className="space-y-4 animate-in fade-in slide-in-from-top-1 duration-200">
                                     <div>
-                                        <label className="text-xs text-neutral-400 mb-1 block">
+                                        <label className="text-xs text-[var(--text-secondary)] mb-1 block">
                                             OpenAI API Key
                                         </label>
                                         <input
@@ -766,17 +776,17 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                                             value={apiKeyInput}
                                             onChange={(e) => setApiKeyInput(e.target.value)}
                                             placeholder="sk-..."
-                                            className="w-full bg-neutral-900 border border-neutral-600 rounded-lg px-3 py-2 text-sm text-neutral-200 focus:outline-none focus:border-violet-500 transition-colors"
+                                            className="w-full bg-[var(--bg-base)] border border-[var(--border-bright)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:border-violet-500 transition-colors"
                                         />
                                     </div>
                                     <div>
-                                        <label className="text-xs text-neutral-400 mb-2 block font-bold uppercase tracking-wider">
+                                        <label className="text-xs text-[var(--text-secondary)] mb-2 block font-bold uppercase tracking-wider">
                                             Cloud Model
                                         </label>
                                         <select
                                             value={modelInput}
                                             onChange={(e) => setModelInput(e.target.value)}
-                                            className="w-full bg-neutral-900 border border-neutral-600 rounded-lg px-3 py-2 text-sm text-neutral-200 focus:outline-none focus:border-violet-500 transition-colors appearance-none cursor-pointer"
+                                            className="w-full bg-[var(--bg-base)] border border-[var(--border-bright)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:border-violet-500 transition-colors appearance-none cursor-pointer"
                                             style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")`, backgroundRepeat: "no-repeat", backgroundPosition: "right 12px center" }}
                                         >
                                             <option value="gpt-4o">GPT-4o (Standard)</option>
@@ -784,7 +794,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                                             <option value="o1-preview">o1-preview (Reasoning)</option>
                                             <option value="o3-mini">o3-mini (Advanced Reasoning Fast)</option>
                                         </select>
-                                        <p className="text-[10px] text-neutral-500 mt-1.5 font-mono truncate">
+                                        <p className="text-[10px] text-[var(--text-muted)] mt-1.5 font-mono truncate">
                                             ID: {modelInput}
                                         </p>
                                     </div>
@@ -794,7 +804,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                             {providerInput === "local" && (
                                 <div className="space-y-4 animate-in fade-in slide-in-from-top-1 duration-200">
                                     <div>
-                                        <label className="text-xs text-neutral-400 mb-1 block">
+                                        <label className="text-xs text-[var(--text-secondary)] mb-1 block">
                                             LM Studio Server URL
                                         </label>
                                         <input
@@ -802,12 +812,12 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                                             value={baseUrlInput}
                                             onChange={(e) => setBaseUrlInput(e.target.value)}
                                             placeholder="http://localhost:1234/v1"
-                                            className="w-full bg-neutral-900 border border-neutral-600 rounded-lg px-3 py-2 text-sm text-neutral-200 focus:outline-none focus:border-emerald-500 transition-colors"
+                                            className="w-full bg-[var(--bg-base)] border border-[var(--border-bright)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:border-emerald-500 transition-colors"
                                         />
-                                        <p className="text-[10px] text-neutral-500 mt-1">Note: /v1 is required in LM Studio</p>
+                                        <p className="text-[10px] text-[var(--text-muted)] mt-1">Note: /v1 is required in LM Studio</p>
                                     </div>
                                     <div>
-                                        <label className="text-xs text-neutral-400 mb-1 block">
+                                        <label className="text-xs text-[var(--text-secondary)] mb-1 block">
                                             Local Model ID
                                         </label>
                                         <input
@@ -815,12 +825,12 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                                             value={modelInput}
                                             onChange={(e) => setModelInput(e.target.value)}
                                             placeholder="qwen2.5-coder-7b-instruct"
-                                            className="w-full bg-neutral-900 border border-neutral-600 rounded-lg px-3 py-2 text-sm text-neutral-200 focus:outline-none focus:border-emerald-500 transition-colors"
+                                            className="w-full bg-[var(--bg-base)] border border-[var(--border-bright)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:border-emerald-500 transition-colors"
                                         />
                                         <p className="text-[10px] text-amber-500 mt-1 font-bold">⚠️ Must match the "Model ID" in LM Studio</p>
                                     </div>
                                     <div>
-                                        <label className="text-xs text-neutral-400 mb-1 block">
+                                        <label className="text-xs text-[var(--text-secondary)] mb-1 block">
                                             Local API Key (Keep empty if not needed)
                                         </label>
                                         <input
@@ -828,7 +838,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                                             value={apiKeyInput}
                                             onChange={(e) => setApiKeyInput(e.target.value)}
                                             placeholder="not required for local"
-                                            className="w-full bg-neutral-900 border border-neutral-600 rounded-lg px-3 py-2 text-sm text-neutral-200 focus:outline-none focus:border-emerald-500 transition-colors opacity-50"
+                                            className="w-full bg-[var(--bg-base)] border border-[var(--border-bright)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:border-emerald-500 transition-colors opacity-50"
                                         />
                                     </div>
                                 </div>
@@ -843,31 +853,53 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                                         OpenRouter lets you access hundreds of AI models via a single API.
                                     </p>
                                 </div>
+
+                                {/* API Key */}
                                 <div>
-                                    <label className="text-xs text-neutral-400 mb-1 block">
-                                        OpenRouter API Key
+                                    <label className="text-xs text-[var(--text-secondary)] mb-1 flex justify-between items-center">
+                                        <span>OpenRouter API Key</span>
+                                        <a
+                                            href="https://openrouter.ai/keys"
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="text-[10px] text-orange-400 hover:text-orange-300 hover:underline transition-colors flex items-center gap-0.5"
+                                        >
+                                            Get Free Key ↗
+                                        </a>
                                     </label>
                                     <input
                                         type="password"
                                         value={openrouterApiKeyInput}
                                         onChange={(e) => setOpenrouterApiKeyInput(e.target.value)}
                                         placeholder="sk-or-..."
-                                        className="w-full bg-neutral-900 border border-neutral-600 rounded-lg px-3 py-2 text-sm text-neutral-200 focus:outline-none focus:border-orange-500 transition-colors"
+                                        className="w-full bg-[var(--bg-base)] border border-[var(--border-bright)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:border-orange-500 transition-colors"
                                     />
-                                    <p className="text-[10px] text-neutral-500 mt-1">
-                                        Get your key at <span className="text-orange-400">openrouter.ai/keys</span>
-                                    </p>
                                 </div>
+
+                                {/* Model — combobox: เลือกจาก preset หรือพิมพ์เองได้ */}
                                 <div>
-                                    <label className="text-xs text-neutral-400 mb-1.5 block font-bold uppercase tracking-wider">
-                                        OpenRouter Model
+                                    <label className="text-xs text-[var(--text-secondary)] mb-1.5 flex justify-between items-center font-bold uppercase tracking-wider">
+                                        <span>OpenRouter Model</span>
+                                        <a
+                                            href="https://openrouter.ai/models"
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="text-[10px] font-normal normal-case tracking-normal text-orange-400 hover:text-orange-300 hover:underline transition-colors"
+                                        >
+                                            Browse all models ↗
+                                        </a>
                                     </label>
+
+                                    {/* Preset Selector */}
                                     <select
-                                        value={openrouterModelInput}
-                                        onChange={(e) => setOpenrouterModelInput(e.target.value)}
-                                        className="w-full bg-neutral-900 border border-neutral-600 rounded-lg px-3 py-2 text-sm text-neutral-200 focus:outline-none focus:border-orange-500 transition-colors appearance-none cursor-pointer"
+                                        onChange={(e) => {
+                                            if (e.target.value) setOpenrouterModelInput(e.target.value);
+                                        }}
+                                        value=""
+                                        className="w-full bg-[var(--bg-base)] border border-[var(--border-bright)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:border-orange-500 transition-colors appearance-none cursor-pointer mb-2"
                                         style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")`, backgroundRepeat: "no-repeat", backgroundPosition: "right 12px center" }}
                                     >
+                                        <option value="" disabled>— เลือก preset หรือพิมพ์ Model ID เองด้านล่าง —</option>
                                         <optgroup label="🆓 Free — Best for Coding">
                                             <option value="qwen/qwen3-coder:free">⭐ Qwen 3 Coder 480B (Best Free Coder)</option>
                                             <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B Instruct (Free)</option>
@@ -883,18 +915,35 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                                             <option value="openrouter/free">Auto Free (Smart Fallback)</option>
                                         </optgroup>
                                         <optgroup label="✦ Premium — Top Models">
-                                            <option value="anthropic/claude-4.6-sonnet-20260217">Claude Sonnet 4.6 (🏆 #1 Week)</option>
-                                            <option value="anthropic/claude-4.6-opus-20260205">Claude Opus 4.6 (Most Powerful)</option>
-                                            <option value="deepseek/deepseek-v3.2-20251201">DeepSeek V3.2 (Fast &amp; Cheap)</option>
-                                            <option value="google/gemini-3-flash-preview-20251217">Gemini 3 Flash Preview</option>
-                                            <option value="moonshotai/kimi-k2.5-0127">Kimi K2.5 (Long Context)</option>
+                                            <option value="anthropic/claude-sonnet-4-5">Claude Sonnet 4.5</option>
+                                            <option value="anthropic/claude-opus-4-5">Claude Opus 4.5 (Most Powerful)</option>
+                                            <option value="deepseek/deepseek-chat-v3-5">DeepSeek V3 (Fast &amp; Cheap)</option>
+                                            <option value="google/gemini-2.5-pro">Gemini 2.5 Pro</option>
+                                            <option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
                                             <option value="openai/gpt-4o">GPT-4o</option>
                                             <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
                                             <option value="deepseek/deepseek-r1">DeepSeek R1 (Full)</option>
                                         </optgroup>
                                     </select>
-                                    <p className="text-[10px] text-neutral-500 mt-1.5 font-mono truncate">
-                                        ID: {openrouterModelInput}
+
+                                    {/* Custom Model ID input */}
+                                    <input
+                                        type="text"
+                                        value={openrouterModelInput}
+                                        onChange={(e) => setOpenrouterModelInput(e.target.value)}
+                                        placeholder="เช่น qwen/qwen3-coder:free หรือ anthropic/claude-sonnet-4-5"
+                                        className="w-full bg-[var(--bg-base)] border border-orange-500/40 rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:border-orange-500 transition-colors font-mono placeholder:font-sans placeholder:text-[var(--text-muted)]"
+                                    />
+                                    <p className="text-[10px] text-[var(--text-muted)] mt-1.5">
+                                        พิมพ์ Model ID โดยตรง หรือเลือกจาก preset ด้านบน •{" "}
+                                        <a
+                                            href="https://openrouter.ai/models"
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="text-orange-400 hover:underline"
+                                        >
+                                            ดูรายการโมเดลทั้งหมด ↗
+                                        </a>
                                     </p>
                                 </div>
                             </div>
@@ -910,7 +959,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                                     </p>
                                 </div>
                                 <div>
-                                    <label className="text-xs text-neutral-400 mb-1 block flex justify-between">
+                                    <label className="text-xs text-[var(--text-secondary)] mb-1 block flex justify-between">
                                         <span>Google AI API Key</span>
                                         <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-[10px] text-red-400 hover:underline">
                                             Get Free Key ↗
@@ -921,17 +970,17 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                                         value={googleApiKeyInput}
                                         onChange={(e) => setGoogleApiKeyInput(e.target.value)}
                                         placeholder="AIzaSy..."
-                                        className="w-full bg-neutral-900 border border-neutral-600 rounded-lg px-3 py-2 text-sm text-neutral-200 focus:outline-none focus:border-red-500 transition-colors"
+                                        className="w-full bg-[var(--bg-base)] border border-[var(--border-bright)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:border-red-500 transition-colors"
                                     />
                                 </div>
                                 <div>
-                                    <label className="text-xs text-neutral-400 mb-1.5 block font-bold uppercase tracking-wider">
+                                    <label className="text-xs text-[var(--text-secondary)] mb-1.5 block font-bold uppercase tracking-wider">
                                         Gemini Model
                                     </label>
                                     <select
                                         value={googleModelInput}
                                         onChange={(e) => setGoogleModelInput(e.target.value)}
-                                        className="w-full bg-neutral-900 border border-neutral-600 rounded-lg px-3 py-2 text-sm text-neutral-200 focus:outline-none focus:border-red-500 transition-colors appearance-none cursor-pointer"
+                                        className="w-full bg-[var(--bg-base)] border border-[var(--border-bright)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:border-red-500 transition-colors appearance-none cursor-pointer"
                                         style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")`, backgroundRepeat: "no-repeat", backgroundPosition: "right 12px center" }}
                                     >
                                         <optgroup label="🔥 Gemini 3.1 Series (Latest Preview)">
@@ -951,29 +1000,29 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                                             <option value="gemini-2.0-flash">Gemini 2.0 Flash (Deprecated)</option>
                                         </optgroup>
                                     </select>
-                                    <p className="text-[10px] text-neutral-500 mt-1.5 font-mono truncate">
+                                    <p className="text-[10px] text-[var(--text-muted)] mt-1.5 font-mono truncate">
                                         ID: {googleModelInput}
                                     </p>
                                 </div>
                             </div>
                         )}
 
-                        <div className="border-t border-neutral-700 pt-4 mb-6">
-                            <label className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-3 block">
+                        <div className="border-t border-[var(--border-normal)] pt-4 mb-6">
+                            <label className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-widest mb-3 block">
                                 Extra Capabilities
                             </label>
-                            <div className="bg-neutral-900/50 border border-neutral-700 rounded-lg p-3">
+                            <div className="bg-[var(--bg-surface)]/50 border border-[var(--border-normal)] rounded-lg p-3">
                                 <div className="flex items-center gap-2 mb-1">
                                     <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                                    <span className="text-xs font-bold text-neutral-300">Web Search Enabled</span>
+                                    <span className="text-xs font-bold text-[var(--text-primary)]">Web Search Enabled</span>
                                 </div>
-                                <p className="text-[10px] text-neutral-500">
+                                <p className="text-[10px] text-[var(--text-muted)]">
                                     AI will automatically search DuckDuckGo for documentation and technical info. No API key required.
                                 </p>
                             </div>
 
                             <div className="mt-4">
-                                <label className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest mb-2 block flex justify-between items-center">
+                                <label className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-widest mb-2 block flex justify-between items-center">
                                     Local Knowledge Base
                                     <div className="flex items-center gap-2">
                                         <button
@@ -985,7 +1034,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                                                     .finally(() => setIsIndexing(false));
                                             }}
                                             disabled={isIndexing}
-                                            className={`text-[10px] flex items-center gap-1 ${isIndexing ? 'text-neutral-500' : 'text-emerald-400 hover:underline'}`}
+                                            className={`text-[10px] flex items-center gap-1 ${isIndexing ? 'text-[var(--text-muted)]' : 'text-emerald-400 hover:underline'}`}
                                         >
                                             <svg className={`w-2.5 h-2.5 ${isIndexing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -1013,21 +1062,25 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                                     </div>
                                 </label>
                                 <div className="space-y-2">
-                                    <div className="flex flex-wrap gap-1.5 min-h-[40px] p-2 bg-neutral-900/50 border border-neutral-700 rounded-lg">
+                                    <div className="flex flex-wrap gap-1.5 min-h-[40px] p-2 bg-[var(--bg-surface)]/50 border border-[var(--border-normal)] rounded-lg">
                                         {knowledgeFiles.length === 0 ? (
-                                            <span className="text-[10px] text-neutral-600 italic">No custom docs added...</span>
+                                            <span className="text-[10px] text-[var(--text-muted)] italic">No custom docs added...</span>
                                         ) : (
                                             knowledgeFiles.map(file => {
                                                 const isEnabled = !file.endsWith('.disabled');
                                                 const displayFileName = file.replace('.disabled', '');
                                                 return (
-                                                    <div key={file} className={`flex items-center gap-1.5 px-2 py-0.5 border rounded text-[10px] transition-colors ${isEnabled ? 'bg-neutral-800 border-neutral-600 text-neutral-300' : 'bg-neutral-900 border-neutral-800 text-neutral-600'}`}>
+                                                    <div
+                                                        key={file}
+                                                        onClick={() => onOpenFile?.(file, true)}
+                                                        className={`flex items-center gap-1.5 px-2 py-0.5 border rounded text-[10px] transition-colors cursor-pointer ${isEnabled ? 'bg-[var(--bg-elevated)] border-[var(--border-bright)] text-[var(--text-primary)] hover:border-violet-500/50' : 'bg-[var(--bg-base)] border-[var(--border-subtle)] text-[var(--text-muted)]'}`}
+                                                    >
                                                         {isEnabled ? (
                                                             <svg className="w-2.5 h-2.5 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                                                             </svg>
                                                         ) : (
-                                                            <svg className="w-2.5 h-2.5 text-neutral-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <svg className="w-2.5 h-2.5 text-[var(--text-muted)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                                                             </svg>
                                                         )}
@@ -1054,7 +1107,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                                             })
                                         )}
                                     </div>
-                                    <p className="text-[10px] text-neutral-500">Add .txt or .md files to `/knowledge_base` to give the AI project-specific context.</p>
+                                    <p className="text-[10px] text-[var(--text-muted)]">Add .txt or .md files to `/knowledge_base` to give the AI project-specific context.</p>
                                 </div>
                             </div>
                         </div>
@@ -1062,7 +1115,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                         <div className="flex gap-2">
                             <button
                                 onClick={() => setShowSettings(false)}
-                                className="flex-1 py-2 bg-neutral-700 hover:bg-neutral-600 text-sm text-neutral-300 rounded-lg transition-colors"
+                                className="flex-1 py-2 bg-[var(--bg-overlay)] hover:bg-neutral-600 text-sm text-[var(--text-primary)] rounded-lg transition-colors"
                             >
                                 Cancel
                             </button>
@@ -1087,10 +1140,10 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                         <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-violet-500/20 to-rose-600/20 border border-violet-500/20 flex items-center justify-center mb-3">
                             <span className="text-lg">✨</span>
                         </div>
-                        <p className="text-sm text-neutral-500 font-medium">
+                        <p className="text-sm text-[var(--text-muted)] font-medium">
                             Ask me anything about your ESP-IDF project
                         </p>
-                        <p className="text-xs text-neutral-600 mt-1">
+                        <p className="text-xs text-[var(--text-muted)] mt-1">
                             I can read, write files, and run commands
                         </p>
                     </div>
@@ -1104,7 +1157,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                         <div
                             className={`max-w-[90%] rounded-xl px-4 py-3 text-sm leading-relaxed ${msg.role === "user"
                                 ? "bg-violet-600/80 text-white rounded-br-sm"
-                                : "bg-neutral-800/80 text-neutral-200 rounded-bl-sm border border-neutral-700/50"
+                                : "bg-[var(--bg-elevated)]/80 text-[var(--text-primary)] rounded-bl-sm border border-[var(--border-subtle)]"
                                 }`}
                         >
                             {msg.role === "assistant" ? (
@@ -1113,11 +1166,11 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                                     {msg.toolCalls?.map((tc, j) => (
                                         <div
                                             key={j}
-                                            className="flex items-center gap-2 text-xs text-neutral-400 mb-2 bg-neutral-700/50 rounded-lg px-2 py-1.5"
+                                            className="flex items-center gap-2 text-xs text-[var(--text-secondary)] mb-2 bg-[var(--bg-overlay)] rounded-lg px-2 py-1.5"
                                         >
                                             <span className="text-emerald-400">⚡</span>
                                             <span className="font-mono">{tc.name}</span>
-                                            <span className="text-neutral-600">✓</span>
+                                            <span className="text-[var(--text-muted)]">✓</span>
                                         </div>
                                     ))}
                                     <div className="prose-sm">{renderMarkdown(msg.content)}</div>
@@ -1157,7 +1210,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                 {/* Streaming text */}
                 {isLoading && streamingText && (
                     <div className="flex justify-start">
-                        <div className="max-w-[90%] rounded-xl rounded-bl-sm px-4 py-3 bg-neutral-800/80 text-neutral-200 text-sm leading-relaxed border border-neutral-700/50">
+                        <div className="max-w-[90%] rounded-xl rounded-bl-sm px-4 py-3 bg-[var(--bg-elevated)]/80 text-[var(--text-primary)] text-sm leading-relaxed border border-[var(--border-subtle)]">
                             <div className="prose-sm">{renderMarkdown(streamingText)}</div>
                             <span className="inline-block w-1.5 h-4 bg-violet-400 animate-pulse ml-0.5 align-middle" />
                         </div>
@@ -1167,7 +1220,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                 {/* Active tool indicators */}
                 {activeTools.length > 0 && (
                     <div className="flex justify-start">
-                        <div className="rounded-xl px-4 py-2 bg-neutral-800/50 border border-neutral-700/50 text-xs text-neutral-400 flex items-center gap-2">
+                        <div className="rounded-xl px-4 py-2 bg-[var(--bg-elevated)]/50 border border-[var(--border-subtle)] text-xs text-[var(--text-secondary)] flex items-center gap-2">
                             <svg className="w-3 h-3 animate-spin text-violet-400" fill="none" viewBox="0 0 24 24">
                                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
@@ -1180,7 +1233,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                 {/* Loading indicator when no text yet */}
                 {isLoading && !streamingText && activeTools.length === 0 && (
                     <div className="flex justify-start">
-                        <div className="rounded-xl px-4 py-3 bg-neutral-800/50 border border-neutral-700/50">
+                        <div className="rounded-xl px-4 py-3 bg-[var(--bg-elevated)]/50 border border-[var(--border-subtle)]">
                             <div className="flex gap-1">
                                 <div className="w-2 h-2 bg-violet-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
                                 <div className="w-2 h-2 bg-violet-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
@@ -1192,7 +1245,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
             </div>
 
             {/* Input */}
-            <div className="p-3 border-t border-neutral-800 bg-neutral-900/60 shrink-0">
+            <div className="p-3 border-t border-[var(--border-subtle)] bg-[var(--bg-base)]/60 shrink-0">
                 <div className="flex gap-2 items-end">
                     <textarea
                         ref={inputRef}
@@ -1201,7 +1254,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                         onKeyDown={handleKeyDown}
                         placeholder="Ask about your code..."
                         rows={1}
-                        className="flex-1 bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-200 resize-none focus:outline-none focus:border-violet-500 transition-colors placeholder:text-neutral-600 max-h-32 overflow-y-auto"
+                        className="flex-1 bg-[var(--bg-elevated)] border border-[var(--border-normal)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] resize-none focus:outline-none focus:border-violet-500 transition-colors placeholder:text-[var(--text-muted)] max-h-32 overflow-y-auto"
                         style={{ minHeight: "36px" }}
                     />
                     {isLoading ? (
@@ -1219,7 +1272,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                             onClick={() => sendMessage()}
                             disabled={!input.trim()}
                             className={`p-2 rounded-lg transition-all duration-200 ${!input.trim()
-                                ? "bg-neutral-700 text-neutral-500 cursor-not-allowed"
+                                ? "bg-[var(--bg-overlay)] text-[var(--text-muted)] cursor-not-allowed"
                                 : "bg-violet-600 hover:bg-violet-500 text-white shadow-lg shadow-violet-500/20 active:scale-95"
                                 }`}
                         >
@@ -1229,7 +1282,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile }: { projectDir: strin
                         </button>
                     )}
                 </div>
-                <p className="text-[10px] text-neutral-600 mt-1 ml-1">
+                <p className="text-[10px] text-[var(--text-muted)] mt-1 ml-1">
                     Enter to send · Shift+Enter for new line
                 </p>
             </div>

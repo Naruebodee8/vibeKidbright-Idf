@@ -164,6 +164,7 @@ interface CodeEditorProps {
     onChange: (value: string) => void;
     filePath: string;
     onSave?: () => void;
+    activeTheme?: string;
 }
 
 export default function CodeEditor({
@@ -171,6 +172,7 @@ export default function CodeEditor({
     onChange,
     filePath,
     onSave,
+    activeTheme = "navy",
 }: CodeEditorProps) {
     const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
     const language = getLanguageFromPath(filePath);
@@ -318,9 +320,9 @@ export default function CodeEditor({
     };
 
     return (
-        <div className="relative w-full h-full border-t border-neutral-800">
+        <div className="relative w-full h-full border-t border-[var(--border-subtle)]">
             {pendingContent !== null && (
-                <div className="absolute top-4 right-8 z-10 flex gap-2 p-2 bg-neutral-900 border border-neutral-700 rounded-lg shadow-xl backdrop-blur-sm shadow-black/50">
+                <div className="absolute top-4 right-8 z-10 flex gap-2 p-2 bg-[var(--bg-elevated)] border border-[var(--border-normal)] rounded-lg shadow-xl backdrop-blur-sm shadow-black/50">
                     <div className="px-3 py-1 bg-violet-600/20 text-violet-400 text-xs font-bold rounded flex items-center mr-2">
                         Review AI Changes
                     </div>
@@ -347,7 +349,7 @@ export default function CodeEditor({
                     language={language}
                     original={value}
                     modified={pendingContent}
-                    theme="vibe-dark"
+                    theme={activeTheme === "light" ? "light" : "vibe-dark"}
                     beforeMount={defineVibeDarkTheme}
                     options={{
                         ...editorOptions,
@@ -362,7 +364,7 @@ export default function CodeEditor({
                     height="100%"
                     language={language}
                     value={value}
-                    theme="vibe-dark"
+                    theme={activeTheme === "light" ? "light" : "vibe-dark"}
                     beforeMount={defineVibeDarkTheme}
                     onMount={handleEditorMount}
                     onChange={(val) => onChange(val ?? "")}

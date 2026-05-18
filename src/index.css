@@ -1,61 +1,344 @@
 @import "tailwindcss";
 
+/* ═══════════════════════════════════════════════════════════
+   vibeKidbright — Design System
+   Default Theme: Dark Navy (สีดำ-กรมท่า)
+   HCI-compliant color semantics for all interactive elements
+═══════════════════════════════════════════════════════════ */
+
+/* ── Base Variables (Navy Dark) ── */
 :root {
-  --background: #0a0a0a;
-  --foreground: #f5f5f5;
-  --primary: #ef4444;
-  --secondary: #171717;
-  --accent: #e11d48;
+  /* ── Base Surface Colors ── */
+  --bg-base:       #05080f;
+  --bg-surface:    #0a1020;
+  --bg-elevated:   #0f1829;
+  --bg-overlay:    #162033;
+
+  /* ── Accent Colors ── */
+  --accent-900:    #001233;
+  --accent-800:    #012169;
+  --accent-700:    #003087;
+  --accent-600:    #0a3d91;
+  --accent-500:    #1a56c4;
+  --accent-400:    #3b82f6;
+  --accent-300:    #93c5fd;
+  --accent-200:    #bfdbfe;
+  --accent-100:    #eff6ff;
+  
+  --app-gradient:  linear-gradient(to right, #3b82f6, #22d3ee);
+
+  /* ── Semantic HCI Button Colors ── */
+  --btn-primary-bg:    #1a56c4;
+  --btn-primary-hover: #1e63d8;
+  --btn-primary-text:  #ffffff;
+  --btn-primary-glow:  rgba(26, 86, 196, 0.35);
+
+  --btn-success-bg:    #065f46;
+  --btn-success-hover: #047857;
+  --btn-success-text:  #ffffff;
+  --btn-success-glow:  rgba(5, 150, 105, 0.35);
+
+  --btn-danger-bg:     #7f1d1d;
+  --btn-danger-hover:  #991b1b;
+  --btn-danger-text:   #fecaca;
+  --btn-danger-glow:   rgba(239, 68, 68, 0.25);
+
+  --btn-warning-bg:    #78350f;
+  --btn-warning-hover: #92400e;
+  --btn-warning-text:  #fde68a;
+  --btn-warning-glow:  rgba(245, 158, 11, 0.25);
+
+  --btn-neutral-bg:    #1e293b;
+  --btn-neutral-hover: #293548;
+  --btn-neutral-text:  #cbd5e1;
+
+  /* ── Text Colors ── */
+  --text-primary:   #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted:     #475569;
+  --text-accent:    #60a5fa;
+
+  /* ── Border Colors ── */
+  --border-subtle:  rgba(30, 64, 120, 0.35);
+  --border-normal:  rgba(30, 64, 120, 0.55);
+  --border-bright:  rgba(59, 130, 246, 0.4);
+
+  /* ── Status Colors ── */
+  --status-ok:      #10b981;
+  --status-warn:    #f59e0b;
+  --status-error:   #ef4444;
+  --status-info:    #3b82f6;
 }
+
+/* ── Theme: Ocean Deep ── */
+[data-theme="ocean"] {
+  --bg-base:       #040f16;
+  --bg-surface:    #081e2b;
+  --bg-elevated:   #0d2b3e;
+  --bg-overlay:    #153b54;
+  --border-subtle:  rgba(14, 116, 144, 0.35);
+  --border-normal:  rgba(14, 116, 144, 0.55);
+  --border-bright:  rgba(34, 211, 238, 0.4);
+  
+  --accent-800:    #083344;
+  --accent-600:    #0e7490;
+  --accent-500:    #06b6d4;
+  --accent-400:    #22d3ee;
+  --accent-300:    #67e8f9;
+  --app-gradient:  linear-gradient(to right, #22d3ee, #2dd4bf);
+  
+  --btn-primary-bg:    #0e7490;
+  --btn-primary-hover: #0891b2;
+  --btn-primary-glow:  rgba(14, 116, 144, 0.35);
+  --text-accent:    #22d3ee;
+}
+
+/* ── Theme: Light (สว่าง) ── */
+[data-theme="light"] {
+  --bg-base:       #ffffff;
+  --bg-surface:    #fafafa;
+  --bg-elevated:   #ffffff;
+  --bg-overlay:    #f1f5f9;
+  --border-subtle:  rgba(148, 163, 184, 0.35);
+  --border-normal:  rgba(148, 163, 184, 0.55);
+  --border-bright:  rgba(37, 99, 235, 0.4);
+
+  --accent-800:    #1e3a8a;
+  --accent-600:    #2563eb;
+  --accent-500:    #3b82f6;
+  --accent-400:    #60a5fa;
+  --accent-300:    #93c5fd;
+  --app-gradient:  linear-gradient(to right, #2563eb, #0ea5e9);
+
+  --btn-primary-bg:    #2563eb;
+  --btn-primary-hover: #1d4ed8;
+  --btn-primary-glow:  rgba(37, 99, 235, 0.25);
+  --btn-primary-text:  #ffffff;
+
+  --btn-neutral-bg:    #e2e8f0;
+  --btn-neutral-hover: #cbd5e1;
+  --btn-neutral-text:  #334155;
+
+  --text-primary:   #0f172a;
+  --text-secondary: #334155;
+  --text-muted:     #64748b;
+  --text-accent:    #2563eb;
+}
+
+/* ── Theme: Midnight Purple ── */
+[data-theme="purple"] {
+  --bg-base:       #0f0518;
+  --bg-surface:    #1a0b2e;
+  --bg-elevated:   #2e104e;
+  --bg-overlay:    #3b185f;
+  --border-subtle:  rgba(109, 40, 217, 0.35);
+  --border-normal:  rgba(109, 40, 217, 0.55);
+  --border-bright:  rgba(139, 92, 246, 0.4);
+
+  --accent-800:    #3b0764;
+  --accent-600:    #6d28d9;
+  --accent-500:    #7c3aed;
+  --accent-400:    #8b5cf6;
+  --accent-300:    #c4b5fd;
+  --app-gradient:  linear-gradient(to right, #a78bfa, #e879f9);
+
+  --btn-primary-bg:    #6d28d9;
+  --btn-primary-hover: #7c3aed;
+  --btn-primary-glow:  rgba(109, 40, 217, 0.35);
+  --text-accent:    #a78bfa;
+}
+
+/* ── Theme: Emerald Night ── */
+[data-theme="emerald"] {
+  --bg-base:       #02120b;
+  --bg-surface:    #052416;
+  --bg-elevated:   #064e3b;
+  --bg-overlay:    #065f46;
+  --border-subtle:  rgba(6, 95, 70, 0.35);
+  --border-normal:  rgba(6, 95, 70, 0.55);
+  --border-bright:  rgba(16, 185, 129, 0.4);
+
+  --accent-800:    #022c22;
+  --accent-600:    #047857;
+  --accent-500:    #059669;
+  --accent-400:    #10b981;
+  --accent-300:    #6ee7b7;
+  --app-gradient:  linear-gradient(to right, #34d399, #4ade80);
+
+  --btn-primary-bg:    #065f46;
+  --btn-primary-hover: #047857;
+  --btn-primary-glow:  rgba(6, 95, 70, 0.35);
+  --text-accent:    #34d399;
+}
+
+/* ── Theme: Crimson (Original) ── */
+[data-theme="crimson"] {
+  --bg-base:       #1a0505;
+  --bg-surface:    #2a0a0f;
+  --bg-elevated:   #4c0519;
+  --bg-overlay:    #881337;
+  --border-subtle:  rgba(190, 18, 60, 0.35);
+  --border-normal:  rgba(190, 18, 60, 0.55);
+  --border-bright:  rgba(244, 63, 94, 0.4);
+
+  --accent-800:    #881337;
+  --accent-600:    #be123c;
+  --accent-500:    #e11d48;
+  --accent-400:    #f43f5e;
+  --accent-300:    #fda4af;
+  --app-gradient:  linear-gradient(to right, #fb7185, #f43f5e);
+
+  --btn-primary-bg:    #be123c;
+  --btn-primary-hover: #e11d48;
+  --btn-primary-glow:  rgba(190, 18, 60, 0.35);
+  --text-accent:    #fb7185;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Base Styles
+═══════════════════════════════════════════════════════════ */
 
 body {
   margin: 0;
   padding: 0;
-  font-family: 'Inter', sans-serif;
-  background-color: var(--background);
-  color: var(--foreground);
+  font-family: 'Inter', 'Noto Sans Thai', sans-serif;
+  background-color: var(--bg-base);
+  color: var(--text-primary);
   overflow: hidden;
-  /* Prevent body scroll, IDE handles layout */
 }
+
+/* ═══════════════════════════════════════════════════════════
+   HCI Button System — Semantic Colors
+═══════════════════════════════════════════════════════════ */
+
+/* Primary Action — กดเพื่อดำเนินการหลัก */
+.btn-primary {
+  background-color: var(--btn-primary-bg);
+  color: var(--btn-primary-text);
+  box-shadow: 0 0 16px var(--btn-primary-glow);
+  @apply px-4 py-2 rounded-lg font-semibold transition-all duration-200 flex items-center gap-2 text-sm;
+}
+.btn-primary:hover {
+  background-color: var(--btn-primary-hover);
+  box-shadow: 0 0 24px var(--btn-primary-glow);
+  transform: translateY(-1px);
+}
+.btn-primary:active { transform: scale(0.97); }
+
+/* Success Action — ยืนยัน, สร้าง, เชื่อมต่อ */
+.btn-success {
+  background-color: var(--btn-success-bg);
+  color: var(--btn-success-text);
+  box-shadow: 0 0 12px var(--btn-success-glow);
+  @apply px-4 py-2 rounded-lg font-semibold transition-all duration-200 flex items-center gap-2 text-sm;
+}
+.btn-success:hover {
+  background-color: var(--btn-success-hover);
+  box-shadow: 0 0 20px var(--btn-success-glow);
+  transform: translateY(-1px);
+}
+.btn-success:active { transform: scale(0.97); }
+
+/* Danger Action — ลบ, ยกเลิกการเชื่อมต่อ */
+.btn-danger {
+  background-color: var(--btn-danger-bg);
+  color: var(--btn-danger-text);
+  @apply px-4 py-2 rounded-lg font-semibold transition-all duration-200 flex items-center gap-2 text-sm;
+}
+.btn-danger:hover {
+  background-color: var(--btn-danger-hover);
+  transform: translateY(-1px);
+}
+.btn-danger:active { transform: scale(0.97); }
+
+/* Neutral Action — ยกเลิก, เรียกดู */
+.btn-secondary {
+  background-color: var(--btn-neutral-bg);
+  color: var(--btn-neutral-text);
+  @apply px-4 py-2 rounded-lg font-medium transition-all duration-200 flex items-center gap-2 text-sm;
+}
+.btn-secondary:hover {
+  background-color: var(--btn-neutral-hover);
+  transform: translateY(-1px);
+}
+.btn-secondary:active { transform: scale(0.97); }
+
+/* ═══════════════════════════════════════════════════════════
+   Glass / Surface Utilities
+═══════════════════════════════════════════════════════════ */
 
 .glass {
-  background: rgba(30, 41, 59, 0.7);
+  background: rgba(10, 16, 32, 0.75);
   backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--border-subtle);
 }
 
-.btn-primary {
-  @apply px-4 py-2 bg-sky-500 hover:bg-sky-600 text-white rounded-md transition-all duration-200 font-medium flex items-center gap-2;
+.surface-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-normal);
+  border-radius: 0.75rem;
 }
 
-.btn-secondary {
-  @apply px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-md transition-all duration-200 font-medium flex items-center gap-2;
-}
+/* ═══════════════════════════════════════════════════════════
+   Scrollbar Styles
+═══════════════════════════════════════════════════════════ */
 
-/* Scrollbar styles */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: #334155;
-  border-radius: 4px;
+  background: var(--accent-800);
+  border-radius: 3px;
 }
-
 ::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+  background: var(--accent-600);
 }
 
-.no-scrollbar::-webkit-scrollbar {
-  display: none;
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* ═══════════════════════════════════════════════════════════
+   Focus Ring (Accessibility)
+═══════════════════════════════════════════════════════════ */
+
+*:focus-visible {
+  outline: 2px solid var(--accent-400);
+  outline-offset: 2px;
 }
 
-.no-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
+/* ═══════════════════════════════════════════════════════════
+   Input Fields
+═══════════════════════════════════════════════════════════ */
+
+.input-field {
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-normal);
+  color: var(--text-primary);
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  transition: border-color 0.2s;
 }
+.input-field:focus {
+  outline: none;
+  border-color: var(--accent-400);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Active/Selected Indicator
+═══════════════════════════════════════════════════════════ */
+
+.active-indicator {
+  background: var(--accent-500);
+  box-shadow: 0 0 8px var(--btn-primary-glow);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Animations
+═══════════════════════════════════════════════════════════ */
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 8px var(--btn-primary-glow); }
+  50%       { box-shadow: 0 0 20px var(--btn-primary-glow); }
+}
+
+.glow-pulse { animation: pulse-glow 2s ease-in-out infinite; }

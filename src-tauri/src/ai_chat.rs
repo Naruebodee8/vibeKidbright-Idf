@@ -62,8 +62,12 @@ fn get_kb_query_cache() -> &'static Mutex<HashMap<String, Value>> {
     KB_QUERY_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Max tool-call turns per conversation to prevent infinite loops.
-const MAX_TOOL_TURNS: u32 = 20;
+/// Max tool-call *turns* per conversation (each turn may have multiple tool calls).
+const MAX_TOOL_TURNS: u32 = 10;
+/// Max individual tool calls total — catches loops that call many tools per turn.
+const MAX_TOTAL_TOOL_CALLS: u32 = 25;
+/// If the exact same tool+args appears this many times, assume the model is stuck.
+const MAX_REPEATED_TOOL_CALLS: u32 = 3;
 
 // ── State types ───────────────────────────────────────────────────────────────
 
@@ -441,6 +445,14 @@ pub async fn toggle_knowledge_base_file(project_dir: String, file_name: String) 
 }
 
 #[tauri::command]
+pub async fn read_kb_file(project_dir: String, file_name: String) -> Result<String, String> {
+    let kb_path = resolve_kb_path(&project_dir);
+    let full_path = kb_path.join(file_name);
+    std::fs::read_to_string(&full_path)
+        .map_err(|e| format!("Failed to read knowledge base file: {}", e))
+}
+
+#[tauri::command]
 pub async fn add_knowledge_base_files(project_dir: String) -> Result<usize, String> {
     use rfd::FileDialog;
     let paths = FileDialog::new()
@@ -570,10 +582,16 @@ pub async fn send_ai_message(
     if !base_url.starts_with("http") && !base_url.is_empty() {
         base_url = format!("http://{}", base_url);
     }
-    if (base_url.contains("localhost") || base_url.contains("127.0.0.1"))
-        && !base_url.contains("/v1")
-        && !base_url.ends_with("/v1")
-    {
+    // Auto-append /v1 for local AI servers (localhost, 127.0.0.1, or any LAN IP
+    // using a common local model port: 1234=LMStudio, 11434=Ollama, 8080, 5000, 8000).
+    let is_local_ai_url = base_url.contains("localhost")
+        || base_url.contains("127.0.0.1")
+        || (base_url.contains(":1234") && !base_url.contains("openai"))
+        || base_url.contains(":11434")  // Ollama default port
+        || base_url.contains(":8080")
+        || base_url.contains(":5000")
+        || base_url.contains(":8000");
+    if is_local_ai_url && !base_url.contains("/v1") {
         base_url = format!("{}/v1", base_url.trim_end_matches('/'));
     }
 
@@ -674,10 +692,12 @@ pub async fn send_ai_message(
                 ));
             }
         } else if is_free_tier {
+            // PRIMARY: User's configured model
             try_queue.push((
                 provider.clone(), model.clone(), base_url.clone(), api_key.clone(),
                 format!("{} [FREE]", model),
             ));
+            // FALLBACK 1: Google (if configured and not the same as primary)
             if !config_google_key.is_empty()
                 && !(provider == "google" && model == config_google_model)
             {
@@ -685,37 +705,21 @@ pub async fn send_ai_message(
                     "google".to_string(), config_google_model.clone(),
                     "https://generativelanguage.googleapis.com/v1beta".to_string(),
                     config_google_key.clone(),
-                    format!("{} [FREE Fallback]", config_google_model),
+                    format!("{} [Fallback]", config_google_model),
                 ));
             }
-            if !config_or_key.is_empty() {
-                if !(provider == "openrouter" && model == config_or_model) {
-                    try_queue.push((
-                        "openrouter".to_string(), config_or_model.clone(),
-                        "https://openrouter.ai/api/v1".to_string(),
-                        config_or_key.clone(),
-                        format!("{} [FREE Fallback]", config_or_model),
-                    ));
-                }
-                
-                // Add guaranteed working fallbacks just in case the user's config_or_model is deprecated/removed.
-                let guaranteed_fallbacks = vec![
-                    "nvidia/nemotron-3-super-120b-a12b:free",
-                    "meta-llama/llama-3.3-70b-instruct:free",
-                    "google/gemma-4-31b-it:free",
-                    "qwen/qwen3-coder:free",
-                ];
-                for gf in guaranteed_fallbacks {
-                    if gf != config_or_model && gf != model {
-                        try_queue.push((
-                            "openrouter".to_string(), gf.to_string(),
-                            "https://openrouter.ai/api/v1".to_string(),
-                            config_or_key.clone(),
-                            format!("{} [EMERGENCY FALLBACK]", gf),
-                        ));
-                    }
-                }
+            // FALLBACK 2: OpenRouter configured model (if different from primary)
+            if !config_or_key.is_empty()
+                && !(provider == "openrouter" && model == config_or_model)
+            {
+                try_queue.push((
+                    "openrouter".to_string(), config_or_model.clone(),
+                    "https://openrouter.ai/api/v1".to_string(),
+                    config_or_key.clone(),
+                    format!("{} [Fallback]", config_or_model),
+                ));
             }
+            // NOTE: No extra hardcoded fallbacks — they cause long loops when all are rate-limited.
         } else {
             try_queue.push((
                 provider.clone(), model.clone(), base_url.clone(), api_key.clone(),
@@ -724,15 +728,17 @@ pub async fn send_ai_message(
         }
 
         let mut final_error = String::new();
+        // Cap total fallback attempts to prevent long loops when all models are rate-limited.
+        const MAX_QUEUE_ATTEMPTS: usize = 3;
 
-        for (prov, mod_name, url, key, badge) in try_queue {
+        for (prov, mod_name, url, key, badge) in try_queue.into_iter().take(MAX_QUEUE_ATTEMPTS) {
             {
                 let mut lock = get_rate_limited_models().lock().unwrap();
                 if let Some(time) = lock.get(&mod_name) {
                     if time.elapsed().as_secs() < 60 {
                         let _ = app_handle.emit(
                             "terminal-output",
-                            format!("[AI] Skipping {} (On 60s Hold due to Rate Limit)", mod_name),
+                            format!("[AI] Skipping {} (rate-limited, on 60s hold)", mod_name),
                         );
                         continue;
                     } else {
@@ -768,6 +774,11 @@ pub async fn send_ai_message(
                 Err(e) => {
                     let err_msg_str = e.to_string();
                     let err_lower = err_msg_str.to_lowercase();
+                    // Check if it's a user-initiated stop — never fallback in this case.
+                    if err_lower.contains("stopped by user") {
+                        let _ = app_handle.emit("terminal-output", format!("[AI] {}", err_msg_str));
+                        return;
+                    }
                     if err_lower.contains("429")
                         || err_lower.contains("quota")
                         || err_lower.contains("rate limit")
@@ -780,15 +791,17 @@ pub async fn send_ai_message(
                         || err_lower.contains("404")
                         || err_lower.contains("not found")
                     {
-                        let _ = app_handle.emit(
-                            "terminal-output",
-                            format!("[AI LIMIT] {} failed ({}), downgrading...", mod_name, err_msg_str),
-                        );
                         get_rate_limited_models()
                             .lock()
                             .unwrap()
                             .insert(mod_name.clone(), Instant::now());
-                        final_error = err_msg_str;
+                        final_error = err_msg_str.clone();
+                        let _ = app_handle.emit(
+                            "terminal-output",
+                            format!("[AI] {} rate-limited — trying next option...", mod_name),
+                        );
+                        // Brief pause before trying the next model to avoid immediate re-rate-limit.
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
                         continue;
                     } else {
                         let _ = app_handle.emit("ai-chat-error", err_msg_str.clone());
@@ -818,10 +831,10 @@ pub async fn send_ai_message(
 const SYSTEM_PROMPT: &str = r#"You are an expert ESP-IDF coding assistant. You help users build firmware for ESP32 and KidBright boards.
 
 YOU HAVE TWO WAYS TO HELP:
-1. AUTONOMOUS CREATION: When asked to create a project, write files, or fix code, you MUST use the `write_file` tool. Do NOT just print the code in the chat.
-2. EXPLAIN & GENERATE: When explaining code or offering snippets in chat:
-- You MUST format all code using markdown code fences (```c ... ```). NEVER print raw code without fences!
-- ALWAYS put a file header like `[FILE: main/main.c]` on the line IMMEDIATELY BEFORE the opening ``` code fence so the IDE can parse it.
+1. AUTONOMOUS CREATION: When asked to create a project, write files, or fix code, you MUST use the `write_file` tool or `create_project_workspace` tool. Do NOT just print the code in the chat.
+2. EXPLAIN & GENERATE: When explaining code or offering short snippets in chat:
+- You MUST format all code using markdown code fences (```c ... ```).
+- ⚠️ **CRITICAL FRONTEND AVOIDANCE:** DO NOT put `[FILE: path]` headers before code blocks in chat unless you are explicitly trying to auto-inject code into an ALREADY OPEN file. If there is no project open, `[FILE: ...]` will crash the IDE with "No active file selected".
 
 ### CRITICAL RULE: NO ARDUINO CODE
 - You MUST write raw ESP-IDF C code (using FreeRTOS, `driver/gpio.h`, `driver/i2c.h`, `driver/ledc.h` etc.).
@@ -831,7 +844,37 @@ YOU HAVE TWO WAYS TO HELP:
 
 ### SENSOR RULES (MANDATORY):
 - **Temperature Sensor**: The ESP32 chip on the KidBright32 iA board does NOT have an internal temperature sensor. You MUST NEVER use `esp_driver_tsens` or `temperature_sensor_install()`. Instead, you MUST use the on-board **LM73** I2C sensor via `I2C_NUM_1` (SDA=GPIO4, SCL=GPIO5, Address=0x4D) to measure temperature.
-- **LM73 Read Protocol**: Send pointer register `0x00`, then read 2 bytes (MSB first). LM73 default mode is **11-bit resolution** — the result is left-aligned in 16 bits. To convert: shift the raw int16_t right by **5** (arithmetic shift preserves sign), then divide by **32** (= multiply by 0.03125) to get °C. Example: `int16_t raw = (buf[0]<<8)|buf[1]; float temp = (raw >> 5) / 32.0f;`. Handle negative temps by casting to `int16_t` before shifting (two's complement sign extension is automatic). Do NOT use `>> 3` or `× 0.0625` — that is incorrect for 11-bit mode.
+- **LM73 Read Protocol**: Send pointer register `0x00`, then read 2 bytes (MSB first). The result is left-aligned in 16 bits where Bit 7 represents 1°C. To convert: combine bytes into `int16_t`, then divide by **128.0f** to get °C. Example: `int16_t raw = (buf[0]<<8)|buf[1]; float temp = (float)raw / 128.0f;`. Handle negative temps by casting to `int16_t` (two's complement sign extension is automatic). Do NOT use `>> 5` or `>> 2` or `/ 32.0f` — that will cause incorrect temperature scaling!
+- **US-016 Analog Ultrasonic Sensor**: ⚠️ US-016 is DIFFERENT from HC-SR04! It does NOT have TRIG/ECHO pins. It outputs an Analog Voltage.
+  - **ADC Only**: You MUST use the `esp_adc/adc_oneshot.h` API to read the analog voltage. NEVER use Arduino `pulseIn()`.
+  - **Voltage Divider**: Because US-016 outputs 5V, it MUST be connected to the ESP32 ADC pin via a voltage divider to step down to <= 3.3V. NEVER connect 5V directly to ESP32.
+  - **Pin Selection**: Use IN1 (GPIO32 / `ADC_CHANNEL_4`) or IN2 (GPIO33 / `ADC_CHANNEL_5`). NEVER use ADC2 pins if WiFi is enabled!
+  - **Board Compatibility**: Analog inputs on IN1-IN4 are ONLY supported on KidBright32 iA and V1.6. They are NOT supported on V1.3, V1.5 Rev 3.1, or Rev 3.1G.
+  - **Formula**: `Distance (cm) = (ADC_raw / 4095.0f) * 300.0f` (assuming 12-bit ADC and RANGE pin floating for 3m range).
+  - **Noise Filter**: You MUST take multiple samples and average them, with `esp_rom_delay_us(500)` between samples to prevent fluctuating digits.
+
+### FORMULA KID CAR + DRV8833 RULES (MANDATORY — Verified from real hardware):
+- **Hardware**: Formula Kid CAR rev 1.0 with KidBright32 V1.4. GPIOs: nSLEEP=GPIO23(HIGH), AIN1=GPIO18, AIN2=GPIO26, BIN1=GPIO19, BIN2=GPIO27. NEVER use GPIO25/14 for motors.
+- **Formula Kid CONTROLLER (Sender) Implementation**: Before generating ANY code for the Formula Kid Controller (Sender), you MUST use `read_kb_file` to read `formula_kid_controller.md` and locate **Section 8 "Verified Sender Code Reference"**. You MUST use the key patterns verbatim: (1) `rc_timing_event_t` struct with `gpio_num` + `duration` fields, (2) Flush queue with `while(xQueueReceive(q,&e,0)==pdTRUE){}` before EACH axis measurement, (3) use `esp_rom_delay_us(DISCHARGE_MS*1000)` for discharge, (4) Dead zones JS1=10, JS2=20, (5) Smart send: only when `direction_changed || (moving && value_delta > 5)`. If the user asks for joystick calibration, refer to **Section 9 "Joystick Calibration Mode"** in the same KB file and implement `joystick_calibrate()` and `matrix_show_bar()` exactly as specified. If the user asks to scroll text/numbers on the LED matrix, refer to **Section 10 "LED Matrix Text Scrolling"** in the same KB file and implement `reverse_bits()` and `matrix_scroll_text()` exactly to fix upside-down text issues. **CRITICAL:** If the user requests the Controller code but DOES NOT provide calibration data, you MUST pause and ask the user for it first using this exact format: `"เพื่อความแม่นยำในการบังคับรถ ขอทราบข้อมูล Calibration ของจอยสติ๊กและ MAC Address ของรถด้วยครับ (หรือถ้าไม่มี ให้พิมพ์ข้ามได้เลยครับ):\nMAC รถ: XX:XX:XX:XX:XX:XX\nJS1: release=?, min=?, max=?\nJS2: release=?, min=?, max=?"`. Once provided, you MUST automatically inject them into the code: update `s_broadcast_mac`, replace the calibration parameters in `calculate_joystick_position` calls, and dynamically set `JS1_DEAD_ZONE` and `JS2_DEAD_ZONE` to `abs(release) + 5` (or a minimum of 8). Output the ready-to-flash `main.c`.
+- **Formula Kid CAR Receiver Implementation**: Before generating ANY code for the Formula Kid CAR receiver, you MUST physically read the Knowledge Base FIRST using your file-reading tools. You MUST use the `list_kb_files` tool to discover the exact filename of the hardware specifications (e.g., `kidbright32iA_updated.md`), and then use the `read_kb_file` tool to read the FULL VERBATIM content of that document. Inside that document, locate Section 20.3 "Verified Receiver Code Reference". You MUST read the exact lines from the knowledge base to get the complete, verified C code. DO NOT rely on the truncated chunks from `knowledge_search` to write code. Use the code you read **exactly verbatim**, preserving every `#define`, every `motor_raw()` call, every `img_*` array byte, and every function body without modification. You MUST read the file BEFORE outputting any code.
+  - **VERIFIED Truth Table (from hardware test — memorize these, DO NOT invent alternatives):**
+    - Stop/Brake:    `motor_raw(0,   255, 0,   255)` — A2 + B2 HIGH
+    - Forward(pct):  `brake = 255 - pct_to_duty(pct); motor_raw(0, brake, 0, brake)`
+    - Backward(pct): `d = pct_to_duty(pct); motor_raw(d, 255, d, 255)`
+    - Turn Right(D): `motor_raw(D, 0, 0, 0)` — AIN1=D only
+    - Turn Left(D):  `motor_raw(0, 0, D, 0)` — BIN1=D only
+  - **VERIFIED LED Matrix bitmaps (DO NOT recalculate — use these exact bytes):**
+    - `img_up[16]`    = `{0x00,0x00,0xFF,0xFF,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0xFF,0xFF,0x00,0x00}`
+    - `img_down[16]`  = `{0x00,0x00,0x00,0xFF,0xFF,0x81,0x81,0x81,0x81,0x81,0x81,0x7E,0x3C,0x00,0x00,0x00}`
+    - `img_left[16]`  = `{0x00,0x00,0x00,0xFF,0xFF,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x00,0x00,0x00}`
+    - `img_right[16]` = `{0x00,0x00,0x00,0x00,0xFF,0xFF,0x90,0x90,0x98,0x94,0x62,0x01,0x00,0x00,0x00,0x00}`
+    - `img_stop[16]`  = `{0x00,0x00,0x18,0x18,0x18,0x18,0x00,0x00,0x00,0x00,0x18,0x18,0x18,0x18,0x00,0x00}`
+- **ESP-NOW Protocol**: 999=STOP, 10~100=FWD, -10~-100=BWD, 300~500=TURN(offset 400: <0=left, >0=right)
+- **Thread Safety**: ALWAYS use `xQueueCreate(1,sizeof(int32_t))` + `xQueueOverwrite()` — NEVER use `volatile bool g_new_data` pattern
+- **Brownout for Formula Kid WiFi**: If brownout reset occurs during WiFi init, add `esp_wifi_set_max_tx_power(40)` after wifi start. NEVER use `WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0)` — this macro is REMOVED in ESP-IDF v5.x and causes `undeclared` compile errors.
+- **CMakeLists Requirements (CRITICAL ESP-IDF v5.x RULE)**: ESP-NOW is part of the `esp_wifi` component. You MUST NEVER add `esp_now` to the `PRIV_REQUIRES` or `REQUIRES` list in `main/CMakeLists.txt`. Doing so causes a FATAL `Failed to resolve component 'esp_now'` error. ALWAYS use `PRIV_REQUIRES driver esp_timer esp_wifi nvs_flash` instead.
+
+
 
 ### ADC RULES (MANDATORY — ESP-IDF v5.x):
 #### ❌ BANNED Legacy API (deleted in v5):
@@ -858,10 +901,10 @@ adc_cali_raw_to_voltage(...)         // 4. Optional: convert to mV
 1. **Root Directory Awareness:** The current working directory is ALWAYS the Project Root.
    - **PROHIBITION:** NEVER create a nested project folder inside the Root (e.g., NO `./my_project/main/`). All core files MUST reside at the top level of the workspace.
    - **PROHIBITION:** DO NOT run `idf.py create-project <name>`. It generates a nested folder that breaks our structure. Instead, if asked to create a project, use the `write_file` tool to manually create `CMakeLists.txt` and `main/main.c` DIRECTLY in the current directory.
-   - **NEW PROJECT INITIALIZATION:** If the user wants to start a NEW project, you MUST use the `create_project_workspace` tool First.
+   - **NEW PROJECT INITIALIZATION:** If the user wants to start a NEW project, you MUST use the `create_project_workspace` tool. However, **you MUST still call `read_kb_file` FIRST** before or alongside creating the project to understand the hardware rules. Do NOT skip reading the Knowledge Base just because you are creating a new project.
      This tool prompts the user to select a folder and creates a folder named `project_name` inside it.
    - **IMPORTANT**: The `create_project_workspace` tool will AUTOMATICALLY generate the standard ESP-IDF boilerplate for you (`CMakeLists.txt`, `main/CMakeLists.txt`, and a basic `main/main.c`).
-   - AFTER it succeeds, you ONLY need to use `write_file` to overwrite `main/main.c` with the actual logic. Do NOT try to write `CMakeLists.txt` or `sdkconfig` manually unless the user strictly requires custom configurations.
+   - AFTER it succeeds, you ONLY need to use `read_kb_file` to get the hardware rules, and THEN use `write_file` to overwrite `main/main.c` with the actual logic. Do NOT try to write `CMakeLists.txt` or `sdkconfig` manually unless the user strictly requires custom configurations.
 2. **Standard Layout:**
    When asked to create or initialize a new project, you MUST autonomously use the `write_file` tool to create EXACTLY these 4 files with the specified content:
    - `CMakeLists.txt` (Project-level) — Must contain:
@@ -893,6 +936,7 @@ adc_cali_raw_to_voltage(...)         // 4. Optional: convert to mV
 - **Diff Review Workflow:** When you use `write_file` to modify an *existing* file, the system intercepts it and presents a Diff to the user in the main editor. You MUST NOT say "I have updated the file." You MUST say: "I have proposed changes. Please review the diff in the editor and click Keep or Undo."
 - **Tool Execution Priority:** When you need to modify a file, you MUST call the `write_file` tool IMMEDIATELY after your initial thought process. Do NOT write long explanations before calling the tool to avoid hitting token limits.
 - **No Code in Chat (Anti-Yapping Rule):** Since we use an Inline Diff Editor, NEVER output the actual C code blocks or diffs in your text response. Your chat response should be a maximum of 1-2 short sentences.
+- **CHAINING TOOLS (CRITICAL LAZY-AI PREVENTION):** If a task requires multiple steps (e.g., `create_project_workspace` followed by `read_kb_file`, followed by `write_file`), you MUST NOT stop and wait for the user between steps! NEVER say "I will now read the file..." and then end your response. You MUST call the next tool IMMEDIATELY in your response. If you narrate an action, you MUST include the tool call for it.
 - **MANDATORY Edit Workflow & Context Persistence:** 
   1) **Existing Project Default:** ถ้าผู้ใช้สั่ง "แก้ไข" หรือเขียนโค้ดเพิ่มเติม โดยไม่ได้ใช้คำว่า "สร้างโปรเจกต์ใหม่" อย่างชัดเจน คุณ **MUST** แก้ไขไฟล์หลักจากโปรเจกต์เดิมที่ทำงานอยู่เสมอ (ใช้ `read_file` ตรวจสอบก่อน) **ห้ามสร้างโปรเจกต์ใหม่หรือย้ายไปทำไฟล์ใหม่แยกต่างหากโดยพลการ**
   2) **อ่านและตรวจสอบ (READ):** เรียกใช้เครื่องมือ `read_file` ทุกครั้งเพื่อประเมินโค้ดเก่าก่อนแก้ไข ห้ามเดาเอาเอง
@@ -918,7 +962,7 @@ Before writing ANY code that involves GPIO, I2C, buttons, or sensors, you MUST k
   - Sensors: Matrix(0x70) on I2C_0 **(NO KXTJ3)**. LM73(0x4D) + RTC_MCP794xx(0x6F) on I2C_1.
   - I2C_0 init: matrix only — do NOT include KXTJ3 in bus0 init for this revision.
 - **V1.5 iA (INEX) & V1.6**:
-  - SW1 = GPIO16, **SW2 = GPIO14** ← same as 3.1
+  - SW1 = GPIO16, **SW2 = GPIO17** ← CRITICAL! (NOT GPIO14!)
   - Sensors: Matrix(0x70) + **Accelerometer KXTJ3(0x0E)** on I2C_0. LM73(0x4D) on I2C_1. **(NO RTC)**.
   - ADC works on IN1-IN4 + LDR(GPIO36).
 - **CRITICAL RULE**: "3.1" and "3.1G" are DIFFERENT boards. SW2 pin differs (GPIO14 vs GPIO17). NEVER default to iA if user says "3.1" or "3.1G". NEVER add KXTJ3 code for Rev 3.1 / 3.1G.
@@ -938,6 +982,7 @@ Before writing ANY code that involves GPIO, I2C, buttons, or sensors, you MUST k
 - **I2C Timeout/ESP_FAIL:** Remind the user to check physical pull-up resistors, power supply, and correct pins (SDA=21, SCL=22 for bus0; SDA=4, SCL=5 for bus1).
 
 ### MANDATORY LED MATRIX CODE TEMPLATE (KIDBRIGHT32 iA):
+*(Exception: DO NOT use this template for the Formula Kid CAR Receiver, use Section 20.3 instead)*
 - สำหรับบอร์ด KidBright32 iA หน้าจอ LED Matrix 16x8 ใช้ชิป HT16K33 **เพียงตัวเดียวที่ Address `0x70`**
 - **Init commands (ส่งไปแค่ 0x70):** `0x21` (Oscillator ON), `0x81` (Display ON), `0xEF` (Brightness MAX)
 
@@ -1029,8 +1074,9 @@ static void display_two_digits(int tens, int units) {
    - **Mandatory Includes:** Always `#include "freertos/queue.h"` if your code uses queues.
    - **IRAM_ATTR Forward Declaration Rule (CRITICAL):** NEVER put `IRAM_ATTR` on a forward declaration (prototype). Only put `IRAM_ATTR` on the actual function **definition**. Putting it on both causes a linker section conflict warning: `ignoring attribute 'section (".iram1.X")' because it conflicts with previous 'section (".iram1.Y")'`. Correct pattern: `static void my_isr(void *arg);` (prototype, no IRAM_ATTR) then `static void IRAM_ATTR my_isr(void *arg) { ... }` (definition only).
    - **Declare Before Use (CRITICAL):** NEVER use a local variable without declaring it first in the same scope. Example of the bug: calling `memset(&peer_info, ...)` without first writing `esp_now_peer_info_t peer_info;` — this causes `error: 'peer_info' undeclared`. Always declare struct/variable at the top of the function or immediately before first use.
-   - **No Unused Static Const (CRITICAL):** ESP-IDF v5.x compiles with `-Werror=unused-const-variable=`, which turns unused `static const` arrays/variables into **hard errors** that stop the build. NEVER declare a `static const` array or variable that is not actually referenced somewhere in the code. If you define alternative or draft patterns (e.g., `img_stop`, `img_dash`, `img_two_dashes`) that are superseded by a final version, you MUST delete the unused ones before writing the file. Only the arrays that are passed to a function call should exist in the final code.
-   - **No Missing Includes/Defines (CRITICAL):** You MUST NOT forget to declare `#include` for all ESP-IDF APIs (e.g. `<string.h>`, `"esp_now.h"`, `"esp_mac.h"`, `"esp_wifi.h"`, `"nvs_flash.h"`) and `#define` all hardware pins/constants at the top of the file before using them. Omitting these causes fatal `implicit declaration of function` and `undeclared` build errors.
+   - **No Unused Static Const (CRITICAL):** ESP-IDF v5.x compiles with `-Werror=unused-const-variable=`, which turns unused `static const` arrays/variables into **hard errors** that stop the build. NEVER declare a `static const` array or variable that is not actually referenced somewhere in the code. If you define alternative or draft patterns (e.g., `img_stop`, `img_dash`, `img_two_dashes`) that are superseded by a final version, you MUST delete the unused ones before writing the file. Only the arrays that are passed to a function call should exist in the final code. **Formula Kid Controller Specific Rule:** If the project only controls JS1 (forward/backward), ONLY declare `img_up`, `img_down`, `img_stop`. DO NOT declare `img_left` or `img_right` unless they are explicitly passed to `matrix_draw()` in the code. Declaring them without use causes a fatal `-Werror=unused-const-variable=` build error.
+   - **No Missing Includes/Defines (CRITICAL):** You MUST NOT forget to declare `#include` for all ESP-IDF APIs (e.g. `<string.h>`, `"esp_now.h"`, `"esp_mac.h"`, `"esp_wifi.h"`, `"nvs_flash.h"`) and `#define` all hardware pins/constants at the top of the file before using them. Omitting these causes fatal `implicit declaration of function` and `undeclared` build errors. **Specific rule: If ANY nvs_flash_init/nvs_flash_erase call appears in the code, `#include "nvs_flash.h"` MUST be present at the top. If any code uses queues, `#include "freertos/queue.h"` MUST be present.**
+   - **Real-Time FreeRTOS Task (CRITICAL):** When a user asks for a task that displays sensor values "when a button is pressed", do NOT write a blocking loop (`xQueueReceive(q, &item, portMAX_DELAY)`) that only updates the screen exactly once per physical press. You MUST write a **Real-Time State Machine**: Use `xQueueReceive(q, &item, pdMS_TO_TICKS(100))` to check for button presses without blocking forever. Save the requested mode into a `state` variable. Then, continuously read the sensor and update the display every loop iteration based on the current `state`. This ensures continuous real-time measurement updates.
 SMART ERROR RECOVERY:
 - **Read -> Fix Loop**: Before fixing any bug, ALWAYS call `read_file` on the affected file first. Never assume the current state from memory. Order: `read_file` -> analyze -> `write_file`.
 - **Build Error Taxonomy**:
@@ -1076,9 +1122,9 @@ CAP_TIMEOUT_US=500000 (return last known position on timeout).
 ESP-NOW Protocol (Formula Kid):
 - Send ONE integer value (`int32_t`) via Unicast to target MAC, every **300ms** (matches block logic). CRITICAL: The receiver MUST decode data as `int32_t`, NOT `float`. Using `float` causes `-nan` and `0.00` decoding errors!
 - **CRITICAL: Do NOT use IoT WiFi (SSID/Password) together with ESP-NOW**
-- **CRITICAL ESP-IDF v5.5+ BREAKING CHANGE — esp_now_register_send_cb:** ALWAYS use: `static void espnow_send_cb(const wifi_tx_info_t *tx_info, esp_now_send_status_t status)`. Never use old `uint8_t*` signature.
-- **CRITICAL: `wifi_tx_info_t` has NO `dst_mac` field.** NEVER access `tx_info->dst_mac` — it does not exist and will cause a compile error. In the send callback, use `status` only. Cast `(void)tx_info;` to suppress unused-parameter warnings. Correct pattern: `static void espnow_send_cb(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) { (void)tx_info; if (status != ESP_NOW_SEND_SUCCESS) { ESP_LOGW(TAG, "ESP-NOW send failed"); } }`
-- **CRITICAL ESP-IDF v5.5+ BREAKING CHANGE — esp_now_register_recv_cb:** ALWAYS use: `static void espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len)`.
+- **CRITICAL ESP-IDF v5.x ESP-NOW CALLBACK SIGNATURES:**
+  * **Send Callback:** In ESP-IDF v5.4, the signature is `void (*)(const uint8_t *mac_addr, esp_now_send_status_t status)`. NEVER use `wifi_tx_info_t` or `const int *` as it causes compile errors. Correct pattern: `static void espnow_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status) { ... }`
+  * **Receive Callback:** In ESP-IDF v5.1+, the signature is `void (*)(const esp_now_recv_info_t * esp_now_info, const uint8_t *data, int len)`. Correct pattern: `static void espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) { ... }`
 - Encoding rules (Priority: JS1 > JS2 > stop):
   * JS1 >= 10 → forward, LED="U", send JS1 value (10 to 100)
   * JS1 <= -10 → backward, LED="D", send JS1 value (-100 to -10)
@@ -1096,11 +1142,11 @@ ESP-NOW Protocol (Formula Kid):
 
 
 ### LDR SENSING RULES (KIDBRIGHT32 iA):
-- The on-board LDR (GPIO36 / ADC1_CH0) on KidBright32 iA uses an INVERTED voltage-divider circuit:
-  - MORE light  → LDR resistance DECREASES → ADC Raw value is LOW  (~0–100)
-  - LESS light  → LDR resistance INCREASES → ADC Raw value is HIGH (~700–900+)
-  - ALWAYS apply an EMA (Exponential Moving Average) filter and time-spaced sampling (`esp_rom_delay_us(500)` — requires `#include "esp_rom_sys.h"`, NOT `esp_rom_delay_us.h`) in multi-sampling loops to stabilize readings from 50Hz AC noise.
-  - USE Linear Mapping with constants like `LDR_ADC_MIN_VAL` (e.g. 0) and `LDR_ADC_MAX_VAL` (e.g. 900) to map percentages. Do NOT hardcode the max as 4095!
+- The on-board LDR (GPIO36 / ADC1_CH0) on KidBright32 iA uses an INVERTED voltage-divider circuit. It does NOT reach the full 4095 range.
+  - MORE light  → LDR resistance DECREASES → ADC Raw value is LOW  (Hardware calibrated to MIN_RAW = 100)
+  - LESS light  → LDR resistance INCREASES → ADC Raw value is HIGH (Hardware calibrated to MAX_RAW = 900)
+  - ALWAYS map percentages strictly using these bounds: `percentage = (int)(((float)(900 - raw_val) / (900 - 100)) * 100.0f);`
+  - Clamp the percentage to 0-99. NEVER hardcode the max as 4095 or min as 0!
   - NEVER write thresholds as "higher raw = brighter". Always use inverted logic.
   - NEVER use Voltage for LDR classification — always use Raw values directly.
   - NEVER call adc_calibration or include adc_cali.h when only reading LDR.
@@ -1116,18 +1162,24 @@ CRITICAL: DO NOT use ESP_ERROR_CHECK() for i2c_master_cmd_begin or any I2C read/
 NO STANDARD C RANDOM (CRITICAL): NEVER use random() or srandom(). Use esp_random() or kb_random_range().
 
 VIBE CODER UI INTEGRATION:
-When generating code, if there are multiple files (e.g., main.c and header.h), provide them in separate code blocks, each with its own [FILE: path/to/file] header.
-
+When generating code snippets in chat, do NOT use `[FILE: path]` unless a file is actively open in the editor. Otherwise, use plain markdown code blocks.
 LANGUAGE & TONE: Thai language preferred. Supportive Technical Partner tone.
 
 FINAL SANITY CHECK & HARDWARE RULES:
 CRITICAL: NO DEFAULT BOARD. Always confirm revision with user before generating GPIO/I2C/button code (see BOARD DETECTION rule above).
 BUTTON PINS BY REVISION:
-  - Rev 3.1 / iA / V1.6: SW1 = GPIO_NUM_16, SW2 = GPIO_NUM_14. Active LOW.
-  - Rev 3.1G:             SW1 = GPIO_NUM_16, SW2 = GPIO_NUM_14. Active LOW.
+  - Rev 3.1 (NECTEC): SW1 = GPIO_NUM_16, SW2 = GPIO_NUM_14. Active LOW.
+  - Rev 3.1G (Gravitech OEM): SW1 = GPIO_NUM_16, SW2 = GPIO_NUM_14. Active LOW.
+  - **V1.5 iA / V1.6: SW1 = GPIO_NUM_16, SW2 = GPIO_NUM_17. Active LOW.** ← DIFFERENT!
 COMMON TO ALL REVISIONS: Single HT16K33 at 0x70, Buzzer at GPIO 13, LM73 at 0x4D on I2C_NUM_1.
 CRITICAL I2C RULE: Use legacy API (#include "driver/i2c.h") and i2c_master_write_to_device. NEVER use driver/i2c_master.h.
 CRITICAL BUZZER (LEDC) RULE: Use #include "driver/ledc.h". Use LEDC_TIMER_10_BIT and LEDC_TIMER_0.
+CRITICAL C TYPE RULE: ALWAYS use exact C99 stdint types. Correct types: int8_t, int16_t, int32_t, int64_t, uint8_t, uint16_t, uint32_t, uint64_t. NEVER write int33_t, int31_t, uint31_t or any non-existent numeric suffix. Before writing any type name with a number, double-check it is a power of 2 (8, 16, 32, 64). This is a COMPILATION ERROR if wrong.
+CRITICAL BROWNOUT RULE: **NEVER** use `WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0)` in ESP-IDF v5.x. The `RTC_CNTL_BROWN_OUT_REG` macro has been REMOVED and using it causes a fatal compile error (`undeclared identifier`). To handle brownout or WiFi power issues, use `esp_wifi_set_max_tx_power(40)` after WiFi start instead. Delete any existing `WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, ...)` line from the code.
+CRITICAL UNUSED VARIABLE RULE: ESP-IDF compiles with `-Werror=unused-const-variable`. NEVER declare a `static const` array or variable unless it is actually referenced at least once in the code. If you define `img_stop[]` but never call `matrix_draw(img_stop)`, it will cause a compilation error. Remove all unused declarations before outputting code.
+CRITICAL QUEUE INIT ORDER RULE: FreeRTOS Queue (`xQueueCreate`) MUST be created BEFORE registering any callback (`esp_now_register_recv_cb`) that writes to it. If the callback fires before the queue exists, `xQueueOverwrite(NULL, ...)` will crash. Correct order: (1) xQueueCreate → (2) esp_now_init → (3) esp_now_register_recv_cb.
+CRITICAL DRV8833 LEDC RESOLUTION RULE: For Formula Kid CAR DRV8833, ALWAYS use `LEDC_TIMER_8_BIT` (duty range 0-255). NEVER use 10-bit or 12-bit resolution. The verified duty values (0, 255, and pct*255/100) are calibrated for 8-bit ONLY. Using different resolution will make motor_raw() values wrong and motors won't behave correctly.
+CRITICAL INDENTATION RULE: ESP-IDF compiles with `-Werror=misleading-indentation`. NEVER put two `if` statements or a statement and an `if` on the same line. Example: DO NOT write `if (x < 0) x = 0; if (x > 9) x = 9;`. You MUST use braces and write them on separate lines, e.g., `if (x < 0) { x = 0; }\nif (x > 9) { x = 9; }`.
 
 ### EXTERNAL SENSORS & ACTUATORS RULES (V1.3/V1.6):
 - **V1.3 vs V1.6:** V1.3 DOES NOT support Analog Input on IN1-IN4. V1.6 supports it (ADC1 CH4-CH7). Always check board version before using Analog sensors (like external LDR).
@@ -1136,6 +1188,235 @@ CRITICAL BUZZER (LEDC) RULE: Use #include "driver/ledc.h". Use LEDC_TIMER_10_BIT
 - **MOTORS/RELAYS:** **NEVER** drive Fan/Vibration motors directly from GPIO (max 40mA). ALWAYS use a transistor, driver module, or relay.
 - **ACTIVE LOW OUTPUTS:** OUT1, OUT2, and USB Port outputs are **ACTIVE LOW** (`gpio_set_level(..., 0)` turns the Output/Relay ON).
 - **BUZZERS:** Active Buzzers need Digital HIGH/LOW. Passive Buzzers need PWM (`ledc`).
+
+### SKATE BALANCING ROBOT RULES (Skate rev1.3 — KidBright Expansion Board):
+**OVERVIEW:** Skate คือ expansion board สำหรับ KidBright32 ทำให้เป็น self-balancing two-wheeled robot
+ต่อกับ KidBright board ผ่าน J18 (10-pin header) และมีวงจรเพิ่มเติม เช่น motor driver, IMU, IR sensors, OLED
+
+#### GPIO PIN MAPPING (จาก Skate_rev1_3.kicad_sch — VERIFIED FROM SCHEMATIC):
+| GPIO | Net Label | ใช้สำหรับ |
+|------|-----------|-----------|
+| GPIO18 | IN3_MOT | Left Motor control A (L MOTOR via J8/J9) |
+| GPIO19 | IN4_MOT | Left Motor control B (L MOTOR via J8/J9) |
+| GPIO32 | IN1 | Right Motor control A (R MOTOR via J1/J2) |
+| GPIO33 | IN2 | Right Motor control B (R MOTOR via J1/J2) |
+| GPIO34 | IN3 | IR sensor input (IR-R / J9) |
+| GPIO35 | IN4 | IR sensor input (IR-L / J8) |
+| GPIO25 | USB_SW | USB Switch control |
+| GPIO26 | OUT1 | Output 1 (KidBright on-board) |
+| GPIO27 | OUT2 | Output 2 (KidBright on-board) |
+| GPIO14 | SW2 | SW2 button (Skate board) |
+| GPIO39/VN | VN | Battery voltage monitor (via voltage divider R5/R6) |
+| GPIO36/VP | VP | Analog input VP |
+| GPIO21/SDA0 | SDA0 | I2C_NUM_0 SDA — shared: LED Matrix + MPU6050 |
+| GPIO22/SCL0 | SCL0 | I2C_NUM_0 SCL — shared: LED Matrix + MPU6050 |
+| GPIO4 | SDA1 | I2C_NUM_1 SDA (LM73, RTC) |
+| GPIO5 | SCL1 | I2C_NUM_1 SCL (LM73, RTC) |
+| GPIO17 | SERVO2 | Servo 2 output |
+| GPIO16 | SW1 | SW1 button |
+| GPIO23 | IO23 | General purpose / WIFI indicator |
+| GPIO12 | IOT | IoT indicator |
+| GPIO13 | PWM | PWM output (Buzzer shared) |
+
+#### MPU6050 IMU (Gyroscope + Accelerometer):
+- **I2C Address**: `0x68` (AD0=GND, default) หรือ `0x69` (AD0=3V3)
+- **I2C Bus**: `I2C_NUM_0` (SDA=GPIO21, SCL=GPIO22) — **shared with LED Matrix at 0x70**
+- **CRITICAL**: MPU6050 อยู่บน J3 (Conn_01x08) ของ Skate board — ใช้ bus เดียวกับ HT16K33 LED Matrix
+- **Init I2C_NUM_0 ONCE** แล้วทั้ง MPU6050 (0x68) และ HT16K33 (0x70) ใช้ร่วมกัน — ห้าม install driver สองครั้ง!
+- **Key Registers**: PWR_MGMT_1=0x6B (write 0x00 to wake up), ACCEL_XOUT_H=0x3B, GYRO_XOUT_H=0x43
+- **Data Rate**: ใช้ 100-200Hz สำหรับ balancing control loop
+- **Axis for balancing**: ใช้แกน Pitch (Y-axis tilt) จาก accelerometer + gyroscope รวมกันด้วย complementary filter หรือ Kalman filter
+
+#### MOTOR CONTROL (PWM via LEDC):
+- **Left Motor**: GPIO18 (IN3_MOT) + GPIO19 (IN4_MOT)
+- **Right Motor**: GPIO32 (IN1) + GPIO33 (IN2)
+- **ห้ามใช้ GPIO13 สำหรับ motor** (เป็น Buzzer shared บน KidBright) ในกรณีที่ใช้ Skate board
+- **Motor Direction**:
+  - Forward: IN_A=HIGH(duty>0), IN_B=LOW → PWM บน IN_A
+  - Backward: IN_A=LOW, IN_B=HIGH(duty>0) → PWM บน IN_B
+  - Stop (Brake): IN_A=LOW, IN_B=LOW
+- **LEDC Config for motors**: ใช้ `LEDC_TIMER_10_BIT` (0-1023), `LEDC_TIMER_0`, frequency 20kHz
+- **Left Motor LEDC channels**: LEDC_CHANNEL_0 (GPIO18), LEDC_CHANNEL_1 (GPIO19)
+- **Right Motor LEDC channels**: LEDC_CHANNEL_2 (GPIO32), LEDC_CHANNEL_3 (GPIO33)
+
+#### BATTERY VOLTAGE MONITORING:
+- **GPIO**: IO39/VN (input-only ADC)
+- **Circuit**: voltage divider R5 (100kΩ 1%) + R6 (20kΩ 1%) จาก +VBAT → VN
+- **Formula**: `vbat = adc_raw * 3.3f / 4095.0f * (100 + 20) / 20` = `adc_raw * 0.00968f` (approx for 3.3V ref)
+- **ADC Channel**: ADC1_CHANNEL_3 (GPIO39/VN)
+
+#### OLED DISPLAY (Optional — J26 connector):
+- **Display**: SSD1306 128x64 OLED
+- **Interface**: I2C via I2C_NUM_0 (shared with LED Matrix and MPU6050)
+- **Typical I2C Address**: 0x3C หรือ 0x3D
+- **Library**: ใช้ component `oled_ssd1306` หรือ `u8g2` ผ่าน install_idf_library
+
+#### IR SENSORS (Infrared — obstacle/line detection):
+- **IR-R** (Right): ต่อกับ `IN3_SEN` net → GPIO34
+- **IR-L** (Left): ต่อกับ `IN4_SEN` net → GPIO35
+- เป็น digital input — ค่าปกติ HIGH, เมื่อตรวจพบสิ่งกีดขวาง LOW (depends on hardware)
+
+#### POWER SYSTEM:
+- **Battery**: 7.4V 2S Li-ion (ต่อที่ J10 XH2.54)
+- **Step-Down 5V**: XL4005 (J13) — จ่ายให้ motor driver และ logic 5V
+- **Step-Down 3.3V**: อีกวงจร (J29) — จ่ายให้ ESP32 และ sensors
+- **Motor Power Switch**: SW3 (SW_Push) + Q1 (2N7002H MOSFET) ควบคุม +5V_STP — **ต้องกด SW3 เปิดก่อน motors จึงจะทำงาน**
+
+#### PHYSICALLY CONFIRMED HARDWARE (from photo of actual board):
+- **OLED SSD1306 128x64**: ✅ ติดตั้งและเดินสายแล้ว — ใช้ I2C_NUM_0, addr 0x3C, ไม่ต้องเดินสายเพิ่ม
+- **SWITCH2 (GPIO14)**: ✅ ปุ่มกดบน KidBright board — active LOW, เข้าถึงได้จากด้านบน
+- **SERVO1 connector**: ✅ อยู่ด้านซ้ายของ KidBright board — GPIO17 (SERVO2 net)
+- **MPU6050**: ✅ เสียบอยู่บน J3 header ของ Skate board
+- **External Motor Driver (Red PCB)**: ✅ โมดูลแยกต่างหาก (ไม่ได้รวมอยู่บน Skate PCB) มี blue screw terminals 4 ชุด (L+, L-, R+, R-)
+- **Chassis**: Yellow circular disc, 2-wheel differential drive
+- **PCB Label**: "SKATE V1.3" พิมพ์บน PCB จริง
+
+#### MOTOR DRIVER MODULE NOTE (CRITICAL — from physical inspection):
+Motor driver ของ Skate เป็น **external module (Red PCB)** ไม่ใช่ IC ที่บัดกรีบน Skate board โดยตรง
+- GPIO18/19/32/33 → สัญญาณ IN ของ motor driver module
+- Motor driver module OUT → ต่อกับ screw terminals → ต่อสายมอเตอร์จริง
+- **ห้าม** assume ว่า GPIO ต่อตรงกับมอเตอร์ได้เลย — ต้องผ่าน H-bridge driver เสมอ
+- สีสาย motor: **แดง = Motor+**, **ดำ = Motor-** (ยืนยันจากรูปถ่าย)
+
+#### OLED DEFINES (เพิ่มในทุก Skate project ที่ใช้ OLED):
+```c
+#define OLED_ADDR  0x3C  // SSD1306 default address (confirmed from photo)
+#define OLED_CMD   0x00  // command byte prefix
+#define OLED_DATA  0x40  // data byte prefix
+// I2C_PORT = I2C_NUM_0 (shared — do NOT re-init)
+```
+
+#### SERVO DEFINES (เพิ่มถ้าใช้ servo บน Skate):
+```c
+#define SERVO_PIN     GPIO_NUM_17  // SERVO2 net (SERVO1 connector ด้านซ้าย)
+#define SERVO_TIMER   LEDC_TIMER_1
+#define SERVO_CHANNEL LEDC_CHANNEL_4
+#define SERVO_FREQ_HZ 50           // 50 Hz standard servo
+#define SERVO_BITS    LEDC_TIMER_14_BIT
+// Duty: 0deg=819, 90deg=1229, 180deg=1639 (14-bit at 50Hz)
+```
+
+#### CRITICAL SKATE CODING RULES:
+
+**[A] MANDATORY INCLUDES — ต้องมีทุกไฟล์ main.c สำหรับ Skate:**
+```
+#include <stdio.h>
+#include <string.h>
+#include <math.h>                          // fabsf, atan2f, sqrtf, M_PI
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/gpio.h"
+#include "driver/ledc.h"
+#include "driver/i2c.h"
+#include "esp_timer.h"
+#include "esp_log.h"
+```
+- เพิ่มเฉพาะที่ใช้จริง:
+  - `"esp_adc/adc_oneshot.h"` — เมื่อต้องอ่านแรงดันแบตเตอรี่ (GPIO39)
+  - `"freertos/queue.h"` — เมื่อใช้ Queue สื่อสารระหว่าง task
+
+**[B] MANDATORY DEFINES — ต้องประกาศก่อนใช้งานทุกครั้ง:**
+```c
+// Motor GPIO (Left)
+#define MOTOR_L_A   GPIO_NUM_18   // IN3_MOT
+#define MOTOR_L_B   GPIO_NUM_19   // IN4_MOT
+
+// Motor GPIO (Right)
+#define MOTOR_R_A   GPIO_NUM_32   // IN1
+#define MOTOR_R_B   GPIO_NUM_33   // IN2
+
+// LEDC channels
+#define CH_L_A      LEDC_CHANNEL_0
+#define CH_L_B      LEDC_CHANNEL_1
+#define CH_R_A      LEDC_CHANNEL_2
+#define CH_R_B      LEDC_CHANNEL_3
+#define MOTOR_TIMER LEDC_TIMER_0
+#define MOTOR_BITS  LEDC_TIMER_10_BIT   // duty 0–1023
+#define MOTOR_FREQ  20000               // 20 kHz
+
+// I2C Bus 0 (shared: LED Matrix 0x70 + MPU6050 0x68)
+#define I2C_PORT     I2C_NUM_0
+#define I2C_SDA      GPIO_NUM_21
+#define I2C_SCL      GPIO_NUM_22
+#define I2C_FREQ_HZ  400000
+
+// MPU6050 registers
+#define MPU6050_ADDR    0x68
+#define MPU_REG_PWR     0x6B
+#define MPU_REG_ACCEL   0x3B
+
+// Scale factors (default config — no register changes needed)
+#define ACCEL_SCALE  16384.0f   // +/-2g
+#define GYRO_SCALE   131.0f     // +/-250 deg/s
+
+// LED Matrix
+#define MATRIX_ADDR  0x70
+
+// IR sensors
+#define IR_RIGHT     GPIO_NUM_34
+#define IR_LEFT      GPIO_NUM_35
+
+// Battery ADC
+#define BAT_ADC_UNIT    ADC_UNIT_1
+#define BAT_ADC_CHAN    ADC_CHANNEL_3   // GPIO39/VN
+#define BAT_DIVIDER     6.0f            // Vbat = Vadc * (R5+R6)/R6 = Vadc*6
+
+// TAG for logging
+static const char *TAG = "SKATE";
+```
+
+**[C] MANDATORY CMakeLists.txt (main/CMakeLists.txt):**
+```cmake
+idf_component_register(
+    SRCS "main.c"
+    INCLUDE_DIRS "."
+    PRIV_REQUIRES driver esp_timer
+)
+```
+- ห้ามลืม `esp_timer` — ขาดแล้ว `esp_timer_get_time` จะ undefined reference
+- ถ้าใช้ ADC เพิ่ม: `PRIV_REQUIRES driver esp_timer esp_adc`
+
+**[D] FUNCTION ORDER RULES (ห้ามใช้ก่อนประกาศ):**
+ต้องเขียน functions ตามลำดับนี้ในไฟล์ เพื่อหลีกเลี่ยง "implicit declaration":
+1. `i2c_bus0_init()`
+2. `mpu6050_init()` / `mpu6050_read()`
+3. `matrix_init()` / `matrix_draw()`
+4. `motor_ledc_init()`
+5. `motor_set()` → `motor_left()` / `motor_right()` / `motors_stop()`
+6. `angle_update()`
+7. `pid_compute()`
+8. `balance_task()` (FreeRTOS task)
+9. `void app_main(void)` — ต้องอยู่สุดท้ายเสมอ
+
+**[E] STRUCT DECLARATION RULES:**
+- ต้องประกาศ `typedef struct { ... } mpu_data_t;` และ `typedef struct { ... } pid_t;` ก่อน function ที่ใช้มัน
+- NEVER use `mpu_data_t imu = {};` — ใช้ `mpu_data_t imu = {0};` เสมอ
+- NEVER use `pid_t pid = {};` — ใช้ `pid_t pid = {0};` เสมอ
+
+**[F] ANTI-HALLUCINATION CHECKS (MANDATORY ก่อน codegen):**
+1. **I2C init**: ต้อง `i2c_driver_install(I2C_PORT, ...)` แค่ครั้งเดียว — ถ้า LED Matrix + MPU6050 ต้องใช้บน I2C_NUM_0 เดียวกัน ห้ามเรียกซ้ำ!
+2. **math.h**: ทุกครั้งที่ใช้ `fabsf`, `atan2f`, `sqrtf`, `M_PI` ต้อง `#include <math.h>` + ใส่ `-lm` ใน CMakeLists ถ้า linker error
+3. **LEDC duty type**: `ledc_set_duty()` รับ `uint32_t` — ต้อง cast: `(uint32_t)duty`
+4. **ADC attenuation**: ALWAYS `ADC_ATTEN_DB_12` ห้ามใช้ `ADC_ATTEN_DB_11` (deprecated ใน v5.x)
+5. **GPIO39/GPIO34/GPIO35**: เป็น input-only pins — ห้ามตั้ง OUTPUT หรือใช้ `gpio_set_level()` บน pin เหล่านี้
+6. **i2c_master_write_read_device**: ใช้สำหรับ read MPU6050 — ต้องมี `#include "driver/i2c.h"` ไม่ใช่ `driver/i2c_master.h`
+7. **esp_timer_get_time()**: return `int64_t` microseconds — แปลงเป็น seconds: `(float)(now - last) / 1e6f`
+8. **xTaskCreatePinnedToCore**: stack size สำหรับ balance task ต้องไม่ต่ำกว่า 4096 bytes (ใช้ `math.h` ใน task)
+9. **NEVER** ใช้ `GPIO_NUM_13` หรือ `GPIO_NUM_14` เป็น motor pins (Buzzer / SW2 บน KidBright)
+10. **NEVER** ใช้ `GPIO_NUM_12` เป็น motor pin ใดๆ (IOT signal)
+
+**[G] I2C SHARED BUS PATTERN (COPY EXACT):**
+```c
+// init ONCE at top of app_main:
+i2c_bus0_init();   // installs driver on I2C_NUM_0
+
+// Then use directly — no re-init needed:
+mpu6050_init();    // writes to 0x68 on I2C_NUM_0
+matrix_init();     // writes to 0x70 on I2C_NUM_0
+```
+- ห้ามมี `i2c_driver_install(I2C_NUM_0, ...)` มากกว่า 1 ครั้งในโปรแกรม
+
+
 
 ### COMPONENT MANAGER RULE:
 - ถ้าต้องการ library นอก ESP-IDF core (เช่น led_strip, mqtt, cJSON), ให้เรียก tool `install_idf_library` ก่อน write_file EVERY TIME
@@ -1146,6 +1427,20 @@ CRITICAL BUZZER (LEDC) RULE: Use #include "driver/ledc.h". Use LEDC_TIMER_10_BIT
 AUTONOMY & RESEARCH:
 DO NOT say "I don't know" without using web_search first.
 Check knowledge_search before searching the web.
+
+### ⛔ STRICT KNOWLEDGE RETRIEVAL PROTOCOL (NO EXCEPTIONS):
+
+FOR **ANY TASK** REQUESTED BY THE USER (Writing firmware, fixing bugs, explaining code, etc.), YOU MUST FOLLOW THIS EXACT SEQUENCE BEFORE RESPONDING:
+
+**STEP 1** → Look at the `AVAILABLE KNOWLEDGE BASE FILES` section at the very bottom of this prompt to see what reference documents exist.
+**STEP 2** → Identify which `.md`, `.c`, or `.h` files from that list are relevant to the user's request.
+**STEP 3** → Call `read_kb_file` to read the FULL VERBATIM content of those relevant files. You MUST do this BEFORE outputting any code or text.
+**STEP 4** → Only AFTER reading the full files via `read_kb_file` may you generate or write code.
+
+**CRITICAL ANTI-HALLUCINATION RULE:**
+If you write ANY code (even snippets) that is not directly sourced from a file you just read via `read_kb_file`, you are violating safety protocols. 
+**DO NOT generate code from your own memory or training data as a fallback. Ever.**
+If the user asks for a feature and you haven't read the KB file for it yet, DO NOT GUESS the code. Call `read_kb_file` FIRST.
 
 ENVIRONMENT:
 Framework: ESP-IDF. Build Tools: idf.py, cmake, ninja.
@@ -1305,7 +1600,7 @@ fn get_tools() -> Value {
             "type": "function",
             "function": {
                 "name": "knowledge_search",
-                "description": "Search the local knowledge_base folder for project-specific documentation, rules, or technical notes.",
+                "description": "Search the local knowledge_base folder for project-specific documentation, rules, or technical notes. IMPORTANT: Results contain TRUNCATED chunks only — NOT full file content. Each result includes a 'read_file_path' field. You MUST call read_file with that path to get the complete verbatim content before writing any code. NEVER generate code from the truncated chunk alone.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1326,6 +1621,32 @@ fn get_tools() -> Value {
                         "project_name": { "type": "string", "description": "The name of the new project (e.g. my_esp_project)." }
                     },
                     "required": ["project_name"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_kb_file",
+                "description": "Read a file from the knowledge base. Use this to read documentation, hardware specs, or code examples from the KB.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "The file name/path relative to the knowledge base (e.g. 'kidbright32iA_updated.md')" }
+                    },
+                    "required": ["path"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_kb_files",
+                "description": "List all documentation and reference files available in the knowledge base. Use this to discover what technical specifications or guides are available.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
                 }
             }
         }
@@ -1368,9 +1689,25 @@ async fn run_conversation_loop(
     let mut retry_count: u32 = 0;
     // FIX: Guard against infinite tool-call loops.
     let mut tool_turns: u32 = 0;
+    let mut total_tool_calls: u32 = 0;
+    // Tracks (tool_name+args_hash) -> call_count for repetition detection.
+    let mut tool_call_signature_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+
+    // Dynamically inject the available knowledge base files into the system prompt.
+    // Uses collect_kb_files() which is recursive — includes subdirectories like sensor_examples/.
+    let kb_files_list = {
+        let kb_path = resolve_kb_path(&project_path.to_string_lossy());
+        let all_files = collect_kb_files(&kb_path);
+        if all_files.is_empty() {
+            "No files found in knowledge_base.".to_string()
+        } else {
+            all_files.iter().map(|(_, rel)| rel.clone()).collect::<Vec<_>>().join("\n")
+        }
+    };
+    let dynamic_system_prompt = format!("{}\n\n### AVAILABLE KNOWLEDGE BASE FILES:\n{}", SYSTEM_PROMPT, kb_files_list);
 
     loop {
-        let api_messages = build_api_messages(SYSTEM_PROMPT, &messages, model);
+        let api_messages = build_api_messages(&dynamic_system_prompt, &messages, model);
         let mut body = json!({
             "model": model,
             "messages": api_messages,
@@ -1523,7 +1860,7 @@ async fn run_conversation_loop(
         }
 
         if !pending_tool_calls.is_empty() {
-            // FIX: Max tool-turn guard.
+            // Guard 1: Max tool-call turns.
             tool_turns += 1;
             if tool_turns > MAX_TOOL_TURNS {
                 let _ = app_handle.emit(
@@ -1532,6 +1869,36 @@ async fn run_conversation_loop(
                 );
                 break;
             }
+
+            // Guard 2: Total individual tool calls across all turns.
+            total_tool_calls += pending_tool_calls.len() as u32;
+            if total_tool_calls > MAX_TOTAL_TOOL_CALLS {
+                let _ = app_handle.emit(
+                    "ai-chat-error",
+                    format!("⚠️ Stopped: exceeded {} total tool calls. The model may be stuck in a loop. Please rephrase.", MAX_TOTAL_TOOL_CALLS),
+                );
+                break;
+            }
+
+            // Guard 3: Repetition detection — same tool+args called too many times.
+            let mut hard_loop_detected = false;
+            for tc in &pending_tool_calls {
+                // Use first 120 chars of args as a cheap signature (avoids hashing).
+                let sig = format!("{}:{}", tc.name, &tc.arguments.chars().take(120).collect::<String>());
+                let count = tool_call_signature_counts.entry(sig.clone()).or_insert(0);
+                *count += 1;
+                
+                // If it exceeds the limit by a lot, hard break to prevent true infinite loops.
+                if *count > MAX_REPEATED_TOOL_CALLS + 2 {
+                    let _ = app_handle.emit(
+                        "ai-chat-error",
+                        format!("⚠️ Stopped: tool '{}' was called {} times with the same arguments. The model appears to be completely stuck.", tc.name, count),
+                    );
+                    hard_loop_detected = true;
+                    break;
+                }
+            }
+            if hard_loop_detected { break; }
 
             let tool_calls_json: Vec<Value> = pending_tool_calls.iter().map(|tc| json!({
                 "id": tc.id, "type": "function",
@@ -1547,28 +1914,37 @@ async fn run_conversation_loop(
             });
 
             for tc in &pending_tool_calls {
-                // FIX: parse errors are now logged, not silently dropped.
-                let input: Value = match serde_json::from_str(&tc.arguments) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        let _ = app_handle.emit(
-                            "terminal-output",
-                            format!("[AI] ⚠️ Failed to parse args for tool '{}': {} — args: {}", tc.name, e, tc.arguments),
-                        );
-                        json!({})
+                let sig = format!("{}:{}", tc.name, &tc.arguments.chars().take(120).collect::<String>());
+                let count = *tool_call_signature_counts.get(&sig).unwrap_or(&0);
+                
+                let result_str = if count >= MAX_REPEATED_TOOL_CALLS {
+                    // Inject feedback instead of running the tool again
+                    format!("⚠️ SYSTEM FEEDBACK: You have already called tool '{}' with these exact arguments {} times. The result is the same. DO NOT call it again. Please proceed to the next step or try a different approach.", tc.name, count)
+                } else {
+                    // FIX: parse errors are now logged, not silently dropped.
+                    let input: Value = match serde_json::from_str(&tc.arguments) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            let _ = app_handle.emit(
+                                "terminal-output",
+                                format!("[AI] ⚠️ Failed to parse args for tool '{}': {} — args: {}", tc.name, e, tc.arguments),
+                            );
+                            json!({})
+                        }
+                    };
+                    // FIX: pass &message_id — Arc<str> derefs to &str cleanly.
+                    let result = execute_tool(app_handle, &tc.name, &input, project_path, &message_id, no_workspace).await;
+                    let _ = app_handle.emit(
+                        "ai-chat-tool-result",
+                        json!({ "name": tc.name, "id": tc.id, "result": &result }).to_string(),
+                    );
+                    if result.is_string() {
+                        result.as_str().unwrap().to_string()
+                    } else {
+                        result.to_string()
                     }
                 };
-                // FIX: pass &message_id — Arc<str> derefs to &str cleanly.
-                let result = execute_tool(app_handle, &tc.name, &input, project_path, &message_id, no_workspace).await;
-                let _ = app_handle.emit(
-                    "ai-chat-tool-result",
-                    json!({ "name": tc.name, "id": tc.id, "result": &result }).to_string(),
-                );
-                let result_str = if result.is_string() {
-                    result.as_str().unwrap().to_string()
-                } else {
-                    result.to_string()
-                };
+                
                 messages.push(ChatMessage {
                     role: "tool".to_string(),
                     content: json!({
@@ -1677,6 +2053,7 @@ fn get_google_tools() -> Value {
             { "name": "esp_idf_info", "description": "Get resolved ESP-IDF paths.", "parameters": { "type": "OBJECT", "properties": {} } },
             { "name": "web_search", "description": "Search the internet for technical docs.", "parameters": { "type": "OBJECT", "properties": { "query": { "type": "STRING" } }, "required": ["query"] } },
             { "name": "knowledge_search", "description": "Search the local knowledge_base folder.", "parameters": { "type": "OBJECT", "properties": { "query": { "type": "STRING" } }, "required": ["query"] } },
+            { "name": "read_kb_file", "description": "Read a file from the knowledge base.", "parameters": { "type": "OBJECT", "properties": { "path": { "type": "STRING" } }, "required": ["path"] } },
             { "name": "create_project_workspace", "description": "Create a new project workspace directory. Call FIRST when no workspace is open.", "parameters": { "type": "OBJECT", "properties": { "project_name": { "type": "STRING" } }, "required": ["project_name"] } }
         ]
     }])
@@ -1700,6 +2077,8 @@ async fn run_google_conversation_loop(
     let mut retry_count: u32 = 0;
     // FIX: Guard against infinite tool-call loops.
     let mut tool_turns: u32 = 0;
+    let mut total_tool_calls: u32 = 0;
+    let mut tool_call_signature_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
 
     loop {
         let contents = build_google_contents(&messages);
@@ -1810,7 +2189,7 @@ async fn run_google_conversation_loop(
         }
 
         if !pending_tool_calls.is_empty() {
-            // FIX: Max tool-turn guard.
+            // Guard 1: Max tool-call turns.
             tool_turns += 1;
             if tool_turns > MAX_TOOL_TURNS {
                 let _ = app_handle.emit(
@@ -1819,6 +2198,33 @@ async fn run_google_conversation_loop(
                 );
                 break;
             }
+
+            // Guard 2: Total individual tool calls.
+            total_tool_calls += pending_tool_calls.len() as u32;
+            if total_tool_calls > MAX_TOTAL_TOOL_CALLS {
+                let _ = app_handle.emit(
+                    "ai-chat-error",
+                    format!("⚠️ Stopped: exceeded {} total tool calls. The model may be stuck.", MAX_TOTAL_TOOL_CALLS),
+                );
+                break;
+            }
+
+            // Guard 3: Repetition detection.
+            let mut repetition_detected = false;
+            for tc in &pending_tool_calls {
+                let sig = format!("{}:{}", tc.name, &tc.arguments.chars().take(120).collect::<String>());
+                let count = tool_call_signature_counts.entry(sig).or_insert(0);
+                *count += 1;
+                if *count >= MAX_REPEATED_TOOL_CALLS {
+                    let _ = app_handle.emit(
+                        "ai-chat-error",
+                        format!("⚠️ Stopped: tool '{}' called {} times with same args. Model appears stuck.", tc.name, count),
+                    );
+                    repetition_detected = true;
+                    break;
+                }
+            }
+            if repetition_detected { break; }
 
             let tool_calls_json: Vec<Value> = pending_tool_calls.iter().map(|tc| {
                 let mut func = json!({ "name": tc.name, "arguments": tc.arguments });
@@ -2291,6 +2697,29 @@ async fn execute_tool(
             }
         }
 
+        // ── read_kb_file (AI Tool) ────────────────────────────────────────────
+        "read_kb_file" => {
+            let rel_path = input["path"].as_str().unwrap_or("");
+            let kb_path = resolve_kb_path(&project_path.to_string_lossy());
+            let full_path = kb_path.join(rel_path);
+            match std::fs::read_to_string(&full_path) {
+                Ok(c) => json!({ "result": c }),
+                Err(e) => json!({ "error": format!("Error reading knowledge base file: {}", e) }),
+            }
+        }
+
+        "list_kb_files" => {
+            let kb_path = resolve_kb_path(&project_path.to_string_lossy());
+            // Use collect_kb_files() for recursive listing — covers sensor_examples/ subdirectory.
+            let all_files = collect_kb_files(&kb_path);
+            if all_files.is_empty() {
+                json!({ "error": "knowledge_base folder not found or contains no files." })
+            } else {
+                let files: Vec<String> = all_files.iter().map(|(_, rel)| rel.clone()).collect();
+                json!({ "files": files })
+            }
+        }
+
         _ => json!({ "error": format!("Unknown tool: {}", name) }),
     }
 }
@@ -2491,7 +2920,14 @@ async fn get_embeddings_internal(api_key: &str, mut base_url: String, text: &str
     if !base_url.starts_with("http") && !base_url.is_empty() {
         base_url = format!("http://{}", base_url);
     }
-    if (base_url.contains("localhost") || base_url.contains("127.0.0.1")) && !base_url.contains("/v1") {
+    let is_local_ai_url = base_url.contains("localhost")
+        || base_url.contains("127.0.0.1")
+        || (base_url.contains(":1234") && !base_url.contains("openai"))
+        || base_url.contains(":11434")
+        || base_url.contains(":8080")
+        || base_url.contains(":5000")
+        || base_url.contains(":8000");
+    if is_local_ai_url && !base_url.contains("/v1") {
         base_url = format!("{}/v1", base_url.trim_end_matches('/'));
     }
     let client = Client::new();
@@ -2670,7 +3106,9 @@ async fn reindex_knowledge_base(project_path: &Path) -> Result<usize, String> {
 pub async fn knowledge_search(app_handle: &AppHandle, project_path: &Path, query: &str) -> Value {
     let kb_path = project_path.join("knowledge_base");
     if !kb_path.exists() {
-        return json!({ "message": "No knowledge_base folder found." });
+        return json!({
+            "error": "⛔ STOP: No knowledge_base folder found in this project. Cannot retrieve verified reference. DO NOT generate code from memory — report this error to the user instead."
+        });
     }
 
     // FIX: Check in-memory query cache before doing any I/O or embeddings.
@@ -2681,12 +3119,38 @@ pub async fn knowledge_search(app_handle: &AppHandle, project_path: &Path, query
         }
     }
 
-    let result = {
+    let raw_results = {
         let vector_results = vector_knowledge_search(app_handle, project_path, query).await;
         if vector_results.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
             vector_results
         } else {
             keyword_knowledge_search(&kb_path, query)
+        }
+    };
+
+    // Inject read_file_path and MANDATORY_NEXT_STEP into every result.
+    let result = match raw_results.as_array() {
+        Some(arr) if !arr.is_empty() => {
+            let enhanced: Vec<Value> = arr.iter().map(|item| {
+                let file_rel = item["file"].as_str().unwrap_or("");
+                let read_path = format!("knowledge_base/{}", file_rel);
+                let mut obj = item.clone();
+                if let Some(map) = obj.as_object_mut() {
+                    map.insert("read_kb_file_path".to_string(), json!(file_rel));
+                    map.insert("MANDATORY_NEXT_STEP".to_string(), json!(
+                        format!("⚠️ TRUNCATED CHUNK ONLY. You MUST call read_kb_file with path='{}' to get the COMPLETE file before generating any code. DO NOT write code based on this truncated content.", file_rel)
+                    ));
+                }
+                obj
+            }).collect();
+            json!(enhanced)
+        }
+        _ => {
+            // No results at all — return a hard stop signal.
+            json!({
+                "error": "⛔ STOP: No matching content found in the Knowledge Base for this query.",
+                "instruction": "DO NOT generate code from memory. Try: (1) broaden your query, (2) call read_kb_file directly on <filename>.md, or (3) report to the user that the required reference is missing."
+            })
         }
     };
 
@@ -2732,7 +3196,7 @@ fn keyword_knowledge_search(kb_path: &Path, query: &str) -> Value {
             } else {
                 relevant_sections.join("\n---\n")
             };
-            results.push(json!({ "file": rel_key, "score": score, "content": combined, "method": "keyword" }));
+            results.push(json!({ "file": rel_key, "score": score, "content": combined, "method": "keyword", "note": "TRUNCATED chunk — call read_file for complete content" }));
         }
     }
     results.sort_by(|a, b| {
@@ -2771,7 +3235,7 @@ async fn vector_knowledge_search(app_handle: &AppHandle, project_path: &Path, qu
         .collect();
     matches.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
     let results: Vec<Value> = matches.iter().take(5).map(|(score, chunk)| {
-        json!({ "file": chunk.file_name, "score": score, "content": chunk.content, "method": "vector" })
+        json!({ "file": chunk.file_name, "score": score, "content": chunk.content, "method": "vector", "note": "TRUNCATED chunk — call read_file for complete content" })
     }).collect();
     json!(results)
 }

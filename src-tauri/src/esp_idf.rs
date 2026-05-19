@@ -281,7 +281,13 @@ fn find_tool_bins(path: &Path, current_depth: u32, max_depth: u32, paths: &mut V
             let p = entry.path();
             if p.is_dir() {
                 let name = p.file_name().unwrap_or_default().to_string_lossy();
-                if name == "bin" {
+                if name == "bin" || name == "Scripts" {
+                    paths.push(p.clone());
+                } else if p.join("ninja.exe").exists() 
+                       || p.join("ninja").exists() 
+                       || p.join("ccache.exe").exists() 
+                       || p.join("ccache").exists() 
+                       || p.join("dfu-util.exe").exists() {
                     paths.push(p.clone());
                 }
                 // Recursive search ลงไปใน sub-directory

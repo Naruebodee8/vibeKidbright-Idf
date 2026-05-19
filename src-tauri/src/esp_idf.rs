@@ -252,6 +252,7 @@ fn find_idf_python(tools_path: &Path) -> Result<(PathBuf, PathBuf), String> {
                 let venv_path = entry.path();
                 for python_bin in venv_python_candidates(&venv_path) {
                     if python_bin.exists() {
+                        patch_pyvenv_cfg(tools_path, &venv_path);
                         return Ok((python_bin, venv_path));
                     }
                 }
@@ -260,6 +261,60 @@ fn find_idf_python(tools_path: &Path) -> Result<(PathBuf, PathBuf), String> {
     }
 
     Err(format!("No ESP-IDF Python venv found in {}", python_env_dir.display()))
+}
+
+fn patch_pyvenv_cfg(tools_path: &Path, venv_path: &Path) {
+    let cfg_path = venv_path.join("pyvenv.cfg");
+    if !cfg_path.exists() { return; }
+
+    let mut actual_python_home = None;
+    if let Ok(entries) = std::fs::read_dir(tools_path.join("tools/idf-python")) {
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                if entry.path().join("python.exe").exists() {
+                    actual_python_home = Some(entry.path());
+                    break;
+                }
+            }
+        }
+    }
+
+    if let Some(home) = actual_python_home {
+        let home_str = home.to_string_lossy().to_string();
+        let py_exe_str = home.join("python.exe").to_string_lossy().to_string();
+
+        if let Ok(contents) = std::fs::read_to_string(&cfg_path) {
+            let mut new_contents = String::new();
+            let mut changed = false;
+
+            for line in contents.lines() {
+                if line.starts_with("home =") {
+                    let new_line = format!("home = {}", home_str);
+                    if line != new_line { changed = true; }
+                    new_contents.push_str(&new_line);
+                } else if line.starts_with("executable =") {
+                    let new_line = format!("executable = {}", py_exe_str);
+                    if line != new_line { changed = true; }
+                    new_contents.push_str(&new_line);
+                } else if line.starts_with("command =") {
+                    if let Some(idx) = line.find(" -m venv") {
+                        let new_line = format!("command = {}{}", py_exe_str, &line[idx..]);
+                        if line != new_line { changed = true; }
+                        new_contents.push_str(&new_line);
+                    } else {
+                        new_contents.push_str(line);
+                    }
+                } else {
+                    new_contents.push_str(line);
+                }
+                new_contents.push('\n');
+            }
+
+            if changed {
+                let _ = std::fs::write(&cfg_path, new_contents);
+            }
+        }
+    }
 }
 
 /// Read the ESP-IDF version from version.txt to avoid git lookups.

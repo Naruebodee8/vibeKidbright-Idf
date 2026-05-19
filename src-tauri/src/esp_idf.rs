@@ -848,7 +848,12 @@ pub async fn run_shell_command(
         if cache_file.exists() {
             if let Ok(cache_content) = std::fs::read_to_string(&cache_file) {
                 let current_idf_str = actual_idf_path.to_string_lossy().replace("\\", "/");
-                if cache_content.contains("IDF_PATH") && !cache_content.contains(&current_idf_str) {
+                let current_proj_str = c_dir.replace("\\", "/");
+                
+                let is_stale_idf = cache_content.contains("IDF_PATH") && !cache_content.contains(&current_idf_str);
+                let is_stale_proj = cache_content.contains("CMAKE_HOME_DIRECTORY") && !cache_content.contains(&current_proj_str);
+
+                if is_stale_idf || is_stale_proj {
                     let _ = app_handle.emit("terminal-output", "\x1b[33m[Auto-Fix] Detected stale build cache. Cleaning build directory to prevent errors...\x1b[0m");
                     let _ = std::fs::remove_dir_all(&build_dir);
                 }

@@ -796,24 +796,32 @@ function App() {
       const toolAsset = releaseData.assets?.find((a: any) => a.name.toLowerCase().includes("tool") && a.name.endsWith(".zip"));
       const frameworkAsset = releaseData.assets?.find((a: any) => a.name.toLowerCase().includes("framework") && a.name.endsWith(".zip"));
       
-      if (!toolAsset || !frameworkAsset) {
-        throw new Error("Could not find both Tool and Framework zip files in the latest release on GitHub.");
+      if (!toolAsset && !frameworkAsset) {
+        throw new Error("Could not find any Tool or Framework zip files in the latest release on GitHub.");
       }
       
-      addLog(`Found toolchain: ${toolAsset.name}`);
-      setEspIdfSetupNote(`Downloading ${toolAsset.name} (1/2)...`);
-      await invoke("download_portable_toolchain", {
-        url: toolAsset.browser_download_url,
-        force: true // Force only on the first file to clear old corrupted setups
-      });
+      let step = 1;
+      const totalSteps = (toolAsset ? 1 : 0) + (frameworkAsset ? 1 : 0);
 
-      addLog(`Found framework: ${frameworkAsset.name}`);
-      setEspIdfSetupNote(`Downloading ${frameworkAsset.name} (2/2)...`);
-      const result = await invoke("download_portable_toolchain", {
-        url: frameworkAsset.browser_download_url,
-        force: false // Do NOT force on the second file, we want to extract into the same dir
-      });
-      addLog(`${result}`);
+      if (toolAsset) {
+        addLog(`Found toolchain: ${toolAsset.name}`);
+        setEspIdfSetupNote(`Downloading ${toolAsset.name} (${step++}/${totalSteps})...`);
+        await invoke("download_portable_toolchain", {
+          url: toolAsset.browser_download_url,
+          force: true // Force clear on the first file
+        });
+      }
+
+      if (frameworkAsset) {
+        addLog(`Found framework: ${frameworkAsset.name}`);
+        setEspIdfSetupNote(`Downloading ${frameworkAsset.name} (${step++}/${totalSteps})...`);
+        const result = await invoke("download_portable_toolchain", {
+          url: frameworkAsset.browser_download_url,
+          force: !toolAsset // Only force if it's the very first file we are downloading
+        });
+        addLog(`${result}`);
+      }
+      
       setEspIdfSetupNote("ESP-IDF installed successfully.");
       setSetupProgress(null);
       await checkEnvironment();

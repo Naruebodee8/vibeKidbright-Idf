@@ -88,6 +88,9 @@ pub fn get_pending_diffs() -> &'static Mutex<HashMap<PathBuf, String>> {
 fn config_path() -> PathBuf { config_dir().join("config.json") }
 
 fn config_dir() -> PathBuf {
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        return PathBuf::from(profile).join(".vibekidbright");
+    }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".vibekidbright")
 }

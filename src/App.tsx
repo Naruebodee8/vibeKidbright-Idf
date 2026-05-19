@@ -789,15 +789,21 @@ function App() {
     addLog("Starting ESP-IDF automated download and setup...");
 
     try {
-      setEspIdfSetupNote("Fetching latest toolchain release info...");
-      const response = await fetch("https://api.github.com/repos/Naruebodee8/vibeKidbright-Idf/releases/latest");
-      const releaseData = await response.json();
+      setEspIdfSetupNote("Fetching toolchain and framework release info...");
       
-      const toolAsset = releaseData.assets?.find((a: any) => a.name.toLowerCase().includes("tool") && a.name.endsWith(".zip"));
-      const frameworkAsset = releaseData.assets?.find((a: any) => a.name.toLowerCase().includes("framework") && a.name.endsWith(".zip"));
+      const [toolRes, frameworkRes] = await Promise.all([
+        fetch("https://api.github.com/repos/Naruebodee8/vibeKidbright-Idf/releases/tags/tool").catch(() => null),
+        fetch("https://api.github.com/repos/Naruebodee8/vibeKidbright-Idf/releases/tags/framwork").catch(() => null)
+      ]);
+      
+      const toolData = toolRes ? await toolRes.json().catch(() => ({})) : {};
+      const frameworkData = frameworkRes ? await frameworkRes.json().catch(() => ({})) : {};
+      
+      const toolAsset = toolData.assets?.find((a: any) => a.name.toLowerCase().includes("tool") && a.name.endsWith(".zip"));
+      const frameworkAsset = frameworkData.assets?.find((a: any) => a.name.toLowerCase().includes("framework") && a.name.endsWith(".zip"));
       
       if (!toolAsset && !frameworkAsset) {
-        throw new Error("Could not find any Tool or Framework zip files in the latest release on GitHub.");
+        throw new Error("Could not find any Tool or Framework zip files in the specific GitHub tags.");
       }
       
       let step = 1;

@@ -285,6 +285,7 @@ function App() {
   const [setupModalError, setSetupModalError] = useState("");
   const [showThemeModal, setShowThemeModal] = useState(false);
   const [activeTheme, setActiveTheme] = useState<string>(() => localStorage.getItem("vibe_theme") || "navy");
+  const [setupProgress, setSetupProgress] = useState<{stage: string, percent: number, message: string} | null>(null);
 
   // Apply theme on mount and change
   useEffect(() => {
@@ -393,6 +394,10 @@ function App() {
       setLogs((prev) => [...prev, event.payload as string]);
     });
 
+    const unlistenProgress = listen("toolchain-progress", (event) => {
+      setSetupProgress(event.payload as {stage: string, percent: number, message: string});
+    });
+
     const unlistenFile = listen("file-modified", async (event) => {
       const { path } = JSON.parse(event.payload as string);
       const normPath = path.replace(/\\/g, '/');
@@ -449,6 +454,7 @@ function App() {
 
     return () => {
       unlistenTerminal.then((f) => f());
+      unlistenProgress.then((f) => f());
       unlistenFile.then((f) => f());
       unlistenForceDir.then((f) => f());
       unlistenDiffPending.then((f) => f());
@@ -777,17 +783,39 @@ function App() {
     if (isSettingUpEspIdf) return;
 
     setIsSettingUpEspIdf(true);
-    setEspIdfSetupNote("Installing ESP-IDF toolchain for this OS...");
+    setEspIdfSetupNote("Downloading and installing ESP-IDF toolchain...");
+    setSetupProgress(null);
     setStatus("Setting up ESP-IDF...");
-    addLog("Starting first-run ESP-IDF setup...");
+    addLog("Starting ESP-IDF automated download and setup...");
 
     try {
-      const result = await invoke("setup_esp_idf", {
-        version: "v5.2.2",
-        targets: ["esp32", "esp32s2", "esp32s3", "esp32c3", "esp32c6"]
+      setEspIdfSetupNote("Fetching latest toolchain release info...");
+      const response = await fetch("https://api.github.com/repos/Naruebodee8/vibeKidbright-Idf/releases/latest");
+      const releaseData = await response.json();
+      
+      const toolAsset = releaseData.assets?.find((a: any) => a.name.toLowerCase().includes("tool") && a.name.endsWith(".zip"));
+      const frameworkAsset = releaseData.assets?.find((a: any) => a.name.toLowerCase().includes("framework") && a.name.endsWith(".zip"));
+      
+      if (!toolAsset || !frameworkAsset) {
+        throw new Error("Could not find both Tool and Framework zip files in the latest release on GitHub.");
+      }
+      
+      addLog(`Found toolchain: ${toolAsset.name}`);
+      setEspIdfSetupNote(`Downloading ${toolAsset.name} (1/2)...`);
+      await invoke("download_portable_toolchain", {
+        url: toolAsset.browser_download_url,
+        force: true // Force only on the first file to clear old corrupted setups
+      });
+
+      addLog(`Found framework: ${frameworkAsset.name}`);
+      setEspIdfSetupNote(`Downloading ${frameworkAsset.name} (2/2)...`);
+      const result = await invoke("download_portable_toolchain", {
+        url: frameworkAsset.browser_download_url,
+        force: false // Do NOT force on the second file, we want to extract into the same dir
       });
       addLog(`${result}`);
       setEspIdfSetupNote("ESP-IDF installed successfully.");
+      setSetupProgress(null);
       await checkEnvironment();
     } catch (err) {
       const message = `ESP-IDF setup failed: ${err}`;
@@ -1118,6 +1146,17 @@ function App() {
           {espIdfSetupNote && (
             <div className="text-[10px] leading-relaxed text-[var(--text-muted)] mb-3 rounded border border-[var(--border-subtle)] bg-[var(--bg-base)]/70 p-2">
               {espIdfSetupNote}
+              {setupProgress && (
+                <div className="mt-2">
+                  <div className="w-full bg-[var(--bg-overlay)] rounded-full h-1.5 mb-1 overflow-hidden">
+                    <div className="bg-blue-500 h-1.5 rounded-full transition-all duration-300" style={{ width: `${setupProgress.percent}%` }}></div>
+                  </div>
+                  <div className="flex justify-between text-[9px] text-[var(--text-secondary)]">
+                    <span className="truncate pr-2">{setupProgress.message}</span>
+                    <span className="shrink-0">{Math.round(setupProgress.percent)}%</span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
           <button

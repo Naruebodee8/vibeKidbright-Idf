@@ -602,6 +602,8 @@ pub async fn run_idf_command(
         .env("IDF_PYTHON_ENV_PATH", &python_env_path)
         .env("ESP_IDF_VERSION", &idf_version)
         .env("PATH", &path_env)
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
         .output()
         .map_err(|e| format!("Failed to execute idf.py: {}", e))?;
 
@@ -848,6 +850,8 @@ pub async fn run_shell_command(
         .env("IDF_PYTHON_ENV_PATH", &python_env_path)
         .env("ESP_IDF_VERSION", &idf_version)
         .env("PATH", &path_env)
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 

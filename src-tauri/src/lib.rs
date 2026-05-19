@@ -15,6 +15,7 @@ pub fn run() {
         .setup(|app| {
             app.manage(ai_chat::AiAbortState(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))));
             app.manage(ai_chat::AiBackupState::default());
+            ai_chat::init_global_knowledge_base(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

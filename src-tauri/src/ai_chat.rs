@@ -139,14 +139,48 @@ fn resolve_kb_path(project_dir: &str) -> PathBuf {
         return proj_kb;
     }
     
-    // Fallback to the global IDE knowledge_base if the project doesn't have its own
-    let fallback_root = resolve_project_root("");
-    let fallback_kb = fallback_root.join("knowledge_base");
-    if fallback_kb.exists() {
-        return fallback_kb;
+    // Fallback to the global IDE knowledge_base in the config directory
+    config_dir().join("knowledge_base")
+}
+
+pub fn init_global_knowledge_base(app_handle: &AppHandle) {
+    let global_kb = config_dir().join("knowledge_base");
+    if !global_kb.exists() {
+        let _ = std::fs::create_dir_all(&global_kb);
+        if let Ok(resource_dir) = app_handle.path().resource_dir() {
+            let bundled_kb = resource_dir.join("knowledge_base");
+            if bundled_kb.exists() {
+                let _ = copy_dir_all(&bundled_kb, &global_kb);
+            } else {
+                // For development, try relative path
+                let dev_kb = std::env::current_dir().unwrap_or_default().join("knowledge_base");
+                if dev_kb.exists() {
+                    let _ = copy_dir_all(&dev_kb, &global_kb);
+                } else {
+                    let dev_parent_kb = std::env::current_dir().unwrap_or_default().join("../knowledge_base");
+                    if dev_parent_kb.exists() {
+                        let _ = copy_dir_all(&dev_parent_kb, &global_kb);
+                    }
+                }
+            }
+        }
     }
-    
-    proj_kb // Default if neither exists
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if !dst.exists() {
+        std::fs::create_dir_all(dst)?;
+    }
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dst.join(entry.file_name()))?;
+        } else {
+            std::fs::copy(entry.path(), dst.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
 }
 
 fn resolve_idf_paths_for_ai(app_handle: &AppHandle) -> Option<(PathBuf, PathBuf)> {

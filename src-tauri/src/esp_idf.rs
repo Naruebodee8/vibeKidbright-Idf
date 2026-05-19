@@ -189,7 +189,7 @@ fn resolve_idf_paths(app_handle: &AppHandle) -> Result<(PathBuf, PathBuf), Strin
     if let Ok(toolchain_dir) = portable_toolchain_dir(app_handle) {
         if toolchain_dir.exists() {
             if let Some(idf_path) = find_idf_in_toolchain(&toolchain_dir) {
-                let tools_path = toolchain_dir.join(".espressif");
+                let tools_path = find_tools_in_toolchain(&toolchain_dir).unwrap_or_else(|| toolchain_dir.join(".espressif"));
                 if let Ok(paths) = canonical_idf_pair(&idf_path, &tools_path) {
                     return Ok(paths);
                 }
@@ -1352,17 +1352,48 @@ fn emit_progress(app_handle: &AppHandle, stage: &str, percent: f32, message: &st
     );
 }
 
-/// ค้นหาโฟลเดอร์ esp-idf-* ภายใน toolchain dir
+/// ค้นหาโฟลเดอร์ที่บรรจุ tools/idf.py ภายใน toolchain dir (หาลึก 2 ชั้น)
 fn find_idf_in_toolchain(toolchain_dir: &Path) -> Option<PathBuf> {
-    std::fs::read_dir(toolchain_dir)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .find(|p| {
-            p.is_dir()
-                && p.file_name()
-                    .map(|n| n.to_string_lossy().starts_with("esp-idf"))
-                    .unwrap_or(false)
-                && p.join("tools/idf.py").exists()
-        })
+    if let Ok(entries) = std::fs::read_dir(toolchain_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                if p.join("tools/idf.py").exists() {
+                    return Some(p);
+                }
+                if let Ok(sub_entries) = std::fs::read_dir(&p) {
+                    for sub in sub_entries.flatten() {
+                        let sp = sub.path();
+                        if sp.is_dir() && sp.join("tools/idf.py").exists() {
+                            return Some(sp);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// ค้นหาโฟลเดอร์ .espressif (หรือโฟลเดอร์ที่มี python_env) ภายใน toolchain dir (หาลึก 2 ชั้น)
+fn find_tools_in_toolchain(toolchain_dir: &Path) -> Option<PathBuf> {
+    if let Ok(entries) = std::fs::read_dir(toolchain_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                if p.join("python_env").exists() {
+                    return Some(p);
+                }
+                if let Ok(sub_entries) = std::fs::read_dir(&p) {
+                    for sub in sub_entries.flatten() {
+                        let sp = sub.path();
+                        if sp.is_dir() && sp.join("python_env").exists() {
+                            return Some(sp);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }

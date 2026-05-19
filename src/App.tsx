@@ -1531,18 +1531,38 @@ function App() {
             <div className="bg-[var(--bg-base)]/60 border border-[var(--border-normal)] rounded-lg p-4 mb-5">
               <div className="flex items-center gap-2 mb-2">
                 <span className="text-amber-400 text-sm font-bold">⬇ Auto Install</span>
-                <span className="text-[10px] text-[var(--text-muted)] bg-[var(--bg-elevated)] px-1.5 py-0.5 rounded">Downloads & installs ESP-IDF v5.2.2</span>
+                <span className="text-[10px] text-[var(--text-muted)] bg-[var(--bg-elevated)] px-1.5 py-0.5 rounded">Downloads & installs Kidbright Toolchain</span>
               </div>
               <p className="text-[11px] text-[var(--text-muted)] mb-3">
-                Let the app download and configure ESP-IDF automatically. This may take 10–20 minutes depending on your connection speed.
+                Let the app download and configure the Kidbright ESP-IDF automatically. This will download the latest ZIP files from GitHub and extract them.
               </p>
-              <button
-                onClick={() => { setShowSetupModal(false); runEspIdfSetup(); }}
-                disabled={isSettingUpEspIdf}
-                className="w-full py-2 bg-amber-700 hover:bg-amber-600 text-sm font-bold text-amber-100 rounded-lg transition-all active:scale-95 shadow-lg shadow-amber-500/20"
-              >
-                Start Auto Install
-              </button>
+              
+              {!isSettingUpEspIdf ? (
+                <button
+                  onClick={() => { runEspIdfSetup(); }}
+                  className="w-full py-2 bg-amber-700 hover:bg-amber-600 text-sm font-bold text-amber-100 rounded-lg transition-all active:scale-95 shadow-lg shadow-amber-500/20"
+                >
+                  Start Auto Install (Force Download)
+                </button>
+              ) : (
+                <div className="mt-2 text-xs text-[var(--text-primary)] p-3 rounded border border-blue-500/30 bg-blue-500/10">
+                  <div className="font-bold mb-2 animate-pulse flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-full border-2 border-blue-400 border-t-transparent animate-spin"></div>
+                    {espIdfSetupNote}
+                  </div>
+                  {setupProgress && (
+                    <div className="mt-2">
+                      <div className="w-full bg-[var(--bg-overlay)] rounded-full h-2 mb-1 overflow-hidden">
+                        <div className="bg-blue-500 h-2 rounded-full transition-all duration-300" style={{ width: `${setupProgress.percent}%` }}></div>
+                      </div>
+                      <div className="flex justify-between text-[10px] text-[var(--text-secondary)]">
+                        <span className="truncate pr-2">{setupProgress.message}</span>
+                        <span className="shrink-0 font-mono">{Math.round(setupProgress.percent)}%</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <button

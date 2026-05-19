@@ -69,11 +69,23 @@ fn resolve_custom_config_paths() -> Option<(PathBuf, PathBuf)> {
     }
 }
 
+fn get_safe_app_data_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(public) = std::env::var("PUBLIC") {
+            return Ok(PathBuf::from(public).join(".vibekidbright"));
+        }
+        return Ok(PathBuf::from("C:\\Users\\Public\\.vibekidbright"));
+    }
+    
+    #[cfg(not(target_os = "windows"))]
+    {
+        app_handle.path().app_data_dir().map_err(|e| format!("Failed to get app data dir: {}", e))
+    }
+}
+
 fn runtime_root_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_safe_app_data_dir(app_handle)?;
     Ok(app_data_dir.join("esp-idf-runtime"))
 }
 
@@ -1168,10 +1180,7 @@ pub struct ToolchainProgress {
 
 /// โฟลเดอร์ที่เก็บ portable toolchain
 fn portable_toolchain_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let app_data_dir = get_safe_app_data_dir(app_handle)?;
     Ok(app_data_dir.join("toolchain"))
 }
 

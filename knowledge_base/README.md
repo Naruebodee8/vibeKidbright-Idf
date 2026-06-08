@@ -5,7 +5,7 @@
 >
 > **Board Coverage:** V1.5 Rev 3.1 (NECTEC Standard) · V1.5 Rev 3.1G (Gravitech OEM) · V1.5 iA (INEX) · V1.6 (Gravitech)
 >
-> ⚠️ **SW2 แตกต่างกันระหว่าง Rev 3.1 (GPIO14) และ Rev 3.1G (GPIO17)** — ตรวจสอบ PCB silkscreen ก่อนเสมอ
+> ⚠️ **SW2 = GPIO14** สำหรับทุกบอร์ด (Rev 3.1, Rev 3.1G, iA, V1.6) — ตรวจสอบ PCB silkscreen ก่อนเสมอ
 
 ---
 
@@ -53,7 +53,7 @@ adc_cali_raw_to_voltage(...)         // 4. Convert to mV (optional calibration)
 
 ### On-board Sensors — V1.5 Rev 3.1 (NECTEC Standard)
 > **ไม่มี Accelerometer** และ **ไม่รองรับ ADC บน IN1–IN4**
-> ⚠️ **SW2 = GPIO14** — ต่างจาก Rev 3.1G ที่ใช้ GPIO17
+> ⚠️ **SW2 = GPIO14**
 
 | Sensor | Protocol | Bus/Pin | Address |
 |--------|----------|---------|---------|
@@ -70,7 +70,7 @@ adc_cali_raw_to_voltage(...)         // 4. Convert to mV (optional calibration)
 
 ### On-board Sensors — V1.5 Rev 3.1**G** (Gravitech OEM)
 > **ไม่มี Accelerometer** และ **ไม่รองรับ ADC บน IN1–IN4** (เหมือน Rev 3.1)
-> ⚠️ **SW2 = GPIO17** — ต่างจาก Rev 3.1 ที่ใช้ GPIO14
+> ⚠️ **SW2 = GPIO14**
 
 | Sensor | Protocol | Bus/Pin | Address |
 |--------|----------|---------|---------|
@@ -80,7 +80,7 @@ adc_cali_raw_to_voltage(...)         // 4. Convert to mV (optional calibration)
 | HT16K33 (Matrix) | I2C | I2C_NUM_0, SDA=GPIO21, SCL=GPIO22 | 0x70 |
 | Passive Buzzer | GPIO/PWM | GPIO13 (LEDC) | — |
 | SW1 Button | GPIO | GPIO16 | — |
-| **SW2 Button** | GPIO | **GPIO17** | — |
+| **SW2 Button** | GPIO | **GPIO14** | — |
 | USB Host | GPIO | GPIO25 (Active LOW) | — |
 
 > 📋 **I2C Scan Result (V1.5 Rev 3.1G — confirmed Apr 17 2026)**
@@ -141,6 +141,7 @@ adc_cali_raw_to_voltage(...)         // 4. Convert to mV (optional calibration)
 |------|--------------|
 | GPIO4 | **BT LED** หรือ **LM73 SDA** — เลือกได้แค่อย่างเดียว |
 | GPIO16 | **SW1 Button** หรือ **SERVO1** — เลือกได้แค่อย่างเดียว |
+| GPIO14 | **SW2 Button** — ห้ามใช้งานอื่น |
 | GPIO36 | LDR ADC — Input-only, ไม่มี pull resistor |
 | GPIO2 | Wi-Fi LED — อย่าใช้งานอื่น |
 
@@ -170,7 +171,7 @@ Button config:
 - SW2 = GPIO14  ← ต่างจาก Rev 3.1G
 ```
 
-### V1.5 Rev 3.1G (Gravitech OEM) — SW2=GPIO17
+### V1.5 Rev 3.1G (Gravitech OEM) — SW2=GPIO14
 ```
 I2C init order:
 1. i2c_init_bus0() → I2C_NUM_0: LED Matrix (0x70) เท่านั้น (ไม่มี KXTJ3)
@@ -179,7 +180,7 @@ I2C init order:
 
 Button config:
 - SW1 = GPIO16
-- SW2 = GPIO17  ← ต่างจาก Rev 3.1
+- SW2 = GPIO14
 ```
 
 ### V1.5 iA (INEX)
@@ -188,6 +189,10 @@ I2C init order (ต้องทำก่อนเสมอ):
 1. i2c_init_bus0() → I2C_NUM_0: LED Matrix (0x70) + KXTJ3 (0x0E)
 2. i2c_init_bus1() → I2C_NUM_1: LM73 (0x4D)
 3. adc_init_all()  → ADC1: LDR + IN1..IN4
+
+Button config:
+- SW1 = GPIO16
+- SW2 = GPIO14
 ```
 
 > **กฎทอง:** `i2c_driver_install()` เรียกได้แค่ครั้งเดียวต่อ port number

@@ -16,8 +16,8 @@
 | **V1.4** | 2019–2020 | ESP32-WROOM-32 | Micro-USB (FTDI) | LED status ลดเหลือ 2 ดวง (WiFi+BT) |
 | **V1.5 Rev 3.1** | 2020 | ESP32-WROOM-32 | Micro-USB (CP2102) | NECTEC Standard, SW2=GPIO14 |
 | **V1.5 Rev 3.1G** | 2020 | ESP32-WROOM-32 | Micro-USB (CP2102) | Gravitech OEM, SW2=GPIO14 |
-| **V1.5 iA** | 2021–2022 | ESP32-WROOM-32 | **USB-C** (CP2102) | INEX, เพิ่ม KXTJ3-1057 Accelerometer, SW2=GPIO17 |
-| **V1.6** | 2022+ | ESP32-WROOM-32 | **USB-C** (CP2102) | Gravitech, เพิ่ม MPU-6050 + RGB LED ×6, SW2=GPIO17 |
+| **V1.5 iA** | 2021–2022 | ESP32-WROOM-32 | **USB-C** (CP2102) | INEX, เพิ่ม KXTJ3-1057 Accelerometer, SW2=GPIO14 |
+| **V1.6** | 2022+ | ESP32-WROOM-32 | **USB-C** (CP2102) | Gravitech, เพิ่ม MPU-6050 + RGB LED ×6, SW2=GPIO14 |
 | **KidBright μAI** | 2024 | AllWinner V831 + ESP32-S3 | USB-C (OTG+UART) | รุ่นล่าสุด — Edge AI, มีกล้อง 2MP, ไมโครโฟน, จอ IPS 1.3 นิ้ว, Tina Linux |
 
 ---
@@ -145,7 +145,8 @@
 | GPIO5 | I2C_NUM_1 SCL | — |
 | GPIO13 | Passive Buzzer (LEDC/PWM) | — |
 | GPIO16 | SW1 Button (Active LOW) | — |
-| **GPIO17** | **SW2 Button (Active LOW)** | ⚠️ ต่างจาก Rev 3.1 ที่ใช้ GPIO14 |
+| **GPIO14** | **SW2 Button (Active LOW)** | — |
+| GPIO17 | SERVO2 (PWM/LEDC) | — |
 | GPIO18 | I/O Port ขา 18 (Active HIGH) | — |
 | GPIO19 | I/O Port ขา 19 (Active HIGH) | — |
 | GPIO21 | I2C_NUM_0 SDA (HT16K33 + KXTJ3) | — |
@@ -182,7 +183,8 @@
 | GPIO13 | Passive Buzzer (LEDC/PWM) | — |
 | **GPIO15** | **SERVO1** (LEDC/PWM) | ห้ามใช้งานอื่น |
 | GPIO16 | SW1 Button (Active LOW) | — |
-| **GPIO17** | **SW2 Button (Active LOW) / SERVO2** | ⚠️ แชร์กัน เลือกได้อย่างเดียว |
+| **GPIO14** | **SW2 Button (Active LOW)** | — |
+| **GPIO17** | **SERVO2** (LEDC/PWM) | — |
 | GPIO21 | I2C_NUM_0 SDA (HT16K33 + MPU-6050) | — |
 | GPIO22 | I2C_NUM_0 SCL (HT16K33 + MPU-6050) | — |
 | GPIO25 | USB Host Control (Active LOW) | — |
@@ -205,7 +207,7 @@
 | **RGB LED ×6 (WS2812B)** | RMT/1-wire | — | ต้องใช้ RMT peripheral |
 | Passive Buzzer | PWM/LEDC | GPIO13 | — |
 | SERVO1 | PWM/LEDC | GPIO15 | — |
-| SERVO2 | PWM/LEDC | GPIO17 | แชร์กับ SW2 |
+| SERVO2 | PWM/LEDC | GPIO17 | — |
 
 ---
 
@@ -314,9 +316,9 @@
 | **V1.3** | 2019 | FTDI (FT232RL) | GPIO23, 2, 5, 12 | GPIO14 | — |
 | **V1.4** | 2019–2020 | FTDI | GPIO2, GPIO4 | GPIO14 | — |
 | **V1.5 Rev 3.1** | 2020 | CP2102 (Micro-USB) | GPIO2, GPIO4 | **GPIO14** | — |
-| **V1.5 Rev 3.1G** | 2020 | CP2102 (Micro-USB) | GPIO2, GPIO4 | **GPIO17** | — |
-| **V1.5 iA** | 2021–2022 | CP2102 (USB-C) | GPIO2, GPIO4 | GPIO17 | KXTJ3-1057 Accel |
-| **V1.6** | 2022+ | CP2102 (USB-C) | GPIO2, GPIO4 | GPIO17 | MPU-6050 Accel+Gyro, RGB LED ×6 |
+| **V1.5 Rev 3.1G** | 2020 | CP2102 (Micro-USB) | GPIO2, GPIO4 | **GPIO14** | — |
+| **V1.5 iA** | 2021–2022 | CP2102 (USB-C) | GPIO2, GPIO4 | GPIO14 | KXTJ3-1057 Accel |
+| **V1.6** | 2022+ | CP2102 (USB-C) | GPIO2, GPIO4 | GPIO14 | MPU-6050 Accel+Gyro, RGB LED ×6 |
 
 > ⚠️ **AI CRITICAL — LED STATUS GPIO DIFFERENCE:**
 > - **V1.1 / V1.2 / V1.3:** มี LED status 4 ดวง → BT=GPIO23, WiFi=GPIO2, NTP=GPIO5, IoT=GPIO12
@@ -623,20 +625,6 @@ void app_main(void) {
 - MCU: ESP32-WROOM-32 (240 MHz, 4MB Flash, 520KB SRAM)
 - USB-Serial Bridge: FTDI FT232RL (ต้องการ FTDI VCP driver)
 - Framework: ESP-IDF v5.x เท่านั้น (ห้ามใช้ Arduino API)
-
-## GPIO Pinout
-| อุปกรณ์ | GPIO |
-|---------|------|
-| LED Matrix SDA (HT16K33) | GPIO21 (I2C_NUM_0) |
-| LED Matrix SCL (HT16K33) | GPIO22 (I2C_NUM_0) |
-| LM73 Temp SDA | GPIO4 (I2C_NUM_1) |
-| LM73 Temp SCL | GPIO5 (I2C_NUM_1) ⚠️ แชร์กับ NTP LED |
-| RTC MCP794xx | GPIO4/5 (I2C_NUM_1, 0x6F) |
-| LDR Light Sensor | GPIO36 (ADC1_CH0) |
-| Passive Buzzer | GPIO13 (LEDC/PWM) |
-| SW1 Button | GPIO16 (Active LOW) |
-| SW2 Button | GPIO14 (Active LOW) |
-| LED BT | GPIO23 (Active HIGH) ⚠️ อาจ conflict กับ I2C SCL |
 | LED WiFi | GPIO2 (Active HIGH) ⚠️ Boot strapping |
 | LED NTP | GPIO5 (Active HIGH) ⚠️ แชร์กับ I2C1 SCL |
 | LED IoT | GPIO12 (Active HIGH) ⚠️ Boot strapping pin |
@@ -727,7 +715,7 @@ void app_main(void) {
 - **ไม่รองรับ ADC บนพอร์ต IN1–IN4** (ต่างจาก iA และ V1.6 ที่รองรับ)
 
 ### Sensor Map — V1.5 Rev 3.1 (NECTEC Standard)
-> ⚠️ **SW2 = GPIO14** — ต่างจาก Rev 3.1G ที่ใช้ GPIO17
+> ⚠️ **SW2 = GPIO14**
 
 | Sensor | Protocol | Bus/Pin | Address/Channel |
 |--------|----------|---------|-----------------|
@@ -745,7 +733,7 @@ void app_main(void) {
 ---
 
 ### Sensor Map — V1.5 Rev 3.1G (Gravitech OEM)
-> ⚠️ **SW2 = GPIO 14** — ต่างจาก Rev 3.1 ที่ใช้ GPIO17
+> ⚠️ **SW2 = GPIO 14**
 > ฮาร์ดแวร์อื่นทุกอย่างเหมือน Rev 3.1 (ไม่มี KXTJ3, ไม่รองรับ ADC บน IN1–IN4)
 
 | Sensor | Protocol | Bus/Pin | Address/Channel |
@@ -780,10 +768,10 @@ void app_main(void) {
 | HT16K33 (LED Matrix) | I2C | I2C_NUM_0, SDA=GPIO21, SCL=GPIO22 | 0x70 |
 | Passive Buzzer | GPIO/PWM | GPIO13 (LEDC) | — |
 | SW1 Button | GPIO | GPIO16 | — |
-| SW2 Button | GPIO | **GPIO17** | — |
+| SW2 Button | GPIO | **GPIO14** | — |
 | RGB LED ×6 (Gerora/WS2812) | RMT/1-wire | **ตรวจสอบ PCB silkscreen** | — |
 | SERVO1 | GPIO/PWM | GPIO15 (LEDC) | — |
-| SERVO2 | GPIO/PWM | GPIO17 (แชร์กับ SW2) | — |
+| SERVO2 | GPIO/PWM | GPIO17 | — |
 | USB Host Control | GPIO | GPIO25 (Active LOW) | — |
 
 > 📋 **I2C Scan Result (V1.6 — expected)**
@@ -801,7 +789,8 @@ void app_main(void) {
 | GPIO13 | **Passive Buzzer** — ต้องใช้ LEDC/PWM เสมอ |
 | GPIO15 | **SERVO1** — ห้ามใช้งานอื่น |
 | GPIO16 | **SW1 Button** — ห้ามใช้งานอื่น |
-| GPIO17 | **SW2 Button** หรือ **SERVO2** — **เลือกได้แค่อย่างเดียว** ห้ามใช้ทั้งคู่พร้อมกัน |
+| GPIO14 | **SW2 Button** — ห้ามใช้งานอื่น |
+| GPIO17 | **SERVO2** — ห้ามใช้งานอื่น |
 | GPIO25 | **USB Host (Active LOW)** — อย่าใช้งานอื่น |
 | GPIO36 | **LDR ADC** — Input-only, ไม่มี pull resistor |
 | GPIO2 | **Wi-Fi LED** — อย่าใช้งานอื่น |
@@ -830,7 +819,7 @@ void app_main(void) {
 | Temperature Sensor (LM73) SCL | GPIO5 | I2C_NUM_1 | — |
 | Passive Buzzer | GPIO13 | LEDC/PWM | Timer_0, Channel_0 |
 | SW1 Button | GPIO16 | Digital Input | Active LOW, Pull-up |
-| **SW2 Button** | **GPIO14** | Digital Input | **Active LOW, Pull-up ⚠️ ต่างจาก iA/V1.6 ที่ใช้ GPIO17** |
+| **SW2 Button** | **GPIO14** | Digital Input | **Active LOW, Pull-up** |
 
 ### Sensor Map — KidBright32 i
 
@@ -908,11 +897,11 @@ void play_tone(uint32_t freq_hz, uint32_t duration_ms) {
 ```
 
 ### Button ISR Setup (Hardware-Tested)
-> ⚠️ **SW2 = GPIO14** บน KidBright32 i (ต่างจาก iA / V1.6 ที่ใช้ **GPIO17**)
+> ⚠️ **SW2 = GPIO14** บน KidBright32 i
 
 ```c
 #define SW1_GPIO GPIO_NUM_16
-#define SW2_GPIO GPIO_NUM_14   // ⚠️ KidBright32 i — ไม่ใช่ GPIO17
+#define SW2_GPIO GPIO_NUM_14
 
 static void IRAM_ATTR gpio_isr_handler(void* arg) {
     uint32_t gpio_num = (uint32_t) arg;
@@ -938,7 +927,7 @@ void setup_buttons_isr(void) {
 
 | จุด | KidBright32 i (Standard) | KidBright32 iA (INEX) |
 |-----|--------------------------|----------------------|
-| SW2 Button | **GPIO14** | **GPIO17** |
+| SW2 Button | **GPIO14** | **GPIO14** |
 | Accelerometer | ❌ ไม่มี | ✅ KXTJ3-1057 (I2C_NUM_0, 0x0E) |
 | USB Connector | Micro-USB | USB-C |
 | ADC บน IN1–IN4 | ❌ Digital เท่านั้น | ✅ รองรับ ADC |
@@ -1769,7 +1758,7 @@ int32_t nvs_read_int(const char *key, int32_t default_val) {
 | GPIO2  | Wi-Fi LED | General GPIO | Avoid for user logic |
 | GPIO4  | BT LED | LM73 SDA (I2C_NUM_1) | **YES — mutually exclusive** |
 
-> ⚠️ **AI INSTRUCTION:** GPIO16 is used by BOTH SW1 (button) and the SERVO1 connector. You MUST NEVER configure GPIO16 for servo output if buttons are also required in the same project. Use SERVO2 (GPIO17) as the default servo output in any project that also uses buttons.
+> ⚠️ **AI INSTRUCTION:** GPIO16 is used by BOTH SW1 (button) and the SERVO1 connector. You MUST NEVER configure GPIO16 for servo output if buttons are also required in the same project. SERVO2 (GPIO17) has no conflict with SW2 (GPIO14) and is safe to use in all configurations.
 
 > ⚠️ **AI INSTRUCTION:** GPIO4 is used by BOTH the BT LED indicator and the SDA line of the LM73 temperature sensor (I2C_NUM_1). In any project that reads the temperature sensor, do NOT use `gpio_set_level(GPIO_NUM_4, ...)` to control the BT LED — doing so will corrupt the I2C bus.
 
@@ -3049,7 +3038,7 @@ Emitter ของ NPN → GND
 |---|---|---|---|---|---|---|---|
 | **USB Bridge** | Cypress CY7C65213 | FTDI FT232RL | FTDI | CP2102 | CP2102 | CP2102 | CP2102 |
 | **USB Connector** | Micro-USB | Micro-USB | Micro-USB | **Micro-USB** | **Micro-USB** | **USB-C** | USB-C |
-| **SW2 GPIO** | GPIO14 | GPIO14 | GPIO14 | **GPIO14** | **GPIO17** | GPIO17 | GPIO17 |
+| **SW2 GPIO** | GPIO14 | GPIO14 | GPIO14 | **GPIO14** | **GPIO14** | GPIO14 | GPIO14 |
 | **LED Status GPIOs** | GPIO23,2,5,12 (×4) | GPIO23,2,5,12 (×4) | GPIO2,4 (×2) | GPIO2,4 (×2) | GPIO2,4 (×2) | GPIO2,4 (×2) | GPIO2,4 (×2) |
 | Analog Input บน IN1–IN4 | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (ADC1_CH4–CH7) | ✅ (ADC1_CH4–CH7) |
 | Accelerometer | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ KXTJ3-1057 (0x0E) | ✅ MPU-6050 (0x68) |

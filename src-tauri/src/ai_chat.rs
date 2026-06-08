@@ -873,6 +873,18 @@ YOU HAVE TWO WAYS TO HELP:
 - You MUST format all code using markdown code fences (```c ... ```).
 - ⚠️ **CRITICAL FRONTEND AVOIDANCE:** DO NOT put `[FILE: path]` headers before code blocks in chat unless you are explicitly trying to auto-inject code into an ALREADY OPEN file. If there is no project open, `[FILE: ...]` will crash the IDE with "No active file selected".
 
+### LOCAL MODE TOOL FALLBACK:
+If your system does not support native JSON function calling (e.g., you are a local model ranned via LM Studio/Ollama), you can execute any tool by outputting a special tag in your response:
+<<<TOOL_CALL: tool_name {"arg": "value"}>>>
+
+For example:
+- To write a file:
+<<<TOOL_CALL: write_file {"path": "main/main.c", "content": "..."}>>>
+- To run a command:
+<<<TOOL_CALL: run_command {"command": "idf.py build"}>>>
+
+You MUST output valid JSON arguments. When using this fallback, output the tool call tag immediately without writing any explanations.
+
 ### CRITICAL RULE: NO ARDUINO CODE
 - You MUST write raw ESP-IDF C code (using FreeRTOS, `driver/gpio.h`, `driver/i2c.h`, `driver/ledc.h` etc.).
 - ALWAYS include `<stdio.h>`, `"freertos/FreeRTOS.h"`, and `"freertos/task.h"` if you use `vTaskDelay` or other FreeRTOS functions.
@@ -999,7 +1011,7 @@ Before writing ANY code that involves GPIO, I2C, buttons, or sensors, you MUST k
   - Sensors: Matrix(0x70) on I2C_0 **(NO KXTJ3)**. LM73(0x4D) + RTC_MCP794xx(0x6F) on I2C_1.
   - I2C_0 init: matrix only — do NOT include KXTJ3 in bus0 init for this revision.
 - **V1.5 iA (INEX) & V1.6**:
-  - SW1 = GPIO16, **SW2 = GPIO17** ← CRITICAL! (NOT GPIO14!)
+  - SW1 = GPIO16, **SW2 = GPIO14** ← CRITICAL! (NOT GPIO17!)
   - Sensors: Matrix(0x70) + **Accelerometer KXTJ3(0x0E)** on I2C_0. LM73(0x4D) on I2C_1. **(NO RTC)**.
   - ADC works on IN1-IN4 + LDR(GPIO36).
 - **CRITICAL RULE**: "3.1" and "3.1G" are DIFFERENT boards. SW2 pin differs (GPIO14 vs GPIO17). NEVER default to iA if user says "3.1" or "3.1G". NEVER add KXTJ3 code for Rev 3.1 / 3.1G.
@@ -1207,7 +1219,7 @@ CRITICAL: NO DEFAULT BOARD. Always confirm revision with user before generating 
 BUTTON PINS BY REVISION:
   - Rev 3.1 (NECTEC): SW1 = GPIO_NUM_16, SW2 = GPIO_NUM_14. Active LOW.
   - Rev 3.1G (Gravitech OEM): SW1 = GPIO_NUM_16, SW2 = GPIO_NUM_14. Active LOW.
-  - **V1.5 iA / V1.6: SW1 = GPIO_NUM_16, SW2 = GPIO_NUM_17. Active LOW.** ← DIFFERENT!
+  - V1.5 iA / V1.6: SW1 = GPIO_NUM_16, SW2 = GPIO_NUM_14. Active LOW.
 COMMON TO ALL REVISIONS: Single HT16K33 at 0x70, Buzzer at GPIO 13, LM73 at 0x4D on I2C_NUM_1.
 CRITICAL I2C RULE: Use legacy API (#include "driver/i2c.h") and i2c_master_write_to_device. NEVER use driver/i2c_master.h.
 CRITICAL BUZZER (LEDC) RULE: Use #include "driver/ledc.h". Use LEDC_TIMER_10_BIT and LEDC_TIMER_0.
@@ -1994,6 +2006,63 @@ async fn run_conversation_loop(
             }
             pending_tool_calls.clear();
         } else {
+            // Text-based Tool Calling Fallback for Local Models
+            if let Some(start_idx) = accumulated_text.find("<<<TOOL_CALL:") {
+                if let Some(end_idx) = accumulated_text[start_idx..].find(">>>") {
+                    let absolute_end = start_idx + end_idx;
+                    let inner = accumulated_text[start_idx + "<<<TOOL_CALL:".len() .. absolute_end].trim();
+                    let (tool_name, arguments_str) = if let Some(space_idx) = inner.find(' ') {
+                        (inner[..space_idx].trim().trim_end_matches(':').to_string(), inner[space_idx..].trim().to_string())
+                    } else {
+                        (inner.to_string(), String::new())
+                    };
+
+                    let _ = app_handle.emit(
+                        "terminal-output",
+                        format!("[AI Local Fallback] Executing text tool: '{}'", tool_name),
+                    );
+
+                    let _ = app_handle.emit(
+                        "ai-chat-tool-start",
+                        json!({ "name": &tool_name, "id": "fallback_call" }).to_string(),
+                    );
+
+                    let input: Value = serde_json::from_str(&arguments_str).unwrap_or(json!({}));
+                    let result = execute_tool(app_handle, &tool_name, &input, project_path, &message_id, no_workspace).await;
+
+                    let _ = app_handle.emit(
+                        "ai-chat-tool-result",
+                        json!({ "name": &tool_name, "id": "fallback_call", "result": &result }).to_string(),
+                    );
+
+                    let result_str = if result.is_string() {
+                        result.as_str().unwrap().to_string()
+                    } else {
+                        result.to_string()
+                    };
+
+                    // Add assistant response containing the tool call text
+                    messages.push(ChatMessage {
+                        role: "assistant".to_string(),
+                        content: json!(accumulated_text),
+                    });
+
+                    // Add tool response
+                    messages.push(ChatMessage {
+                        role: "tool".to_string(),
+                        content: json!({
+                            "__tool_response__": true,
+                            "tool_call_id": "fallback_call",
+                            "__func_name__": &tool_name,
+                            "content": result_str
+                        }),
+                    });
+
+                    // Continue the loop to let the model generate the final response
+                    continue;
+                }
+            }
+
             if !accumulated_text.is_empty() {
                 messages.push(ChatMessage {
                     role: "assistant".to_string(),
@@ -2039,11 +2108,16 @@ fn build_google_contents(messages: &[ChatMessage]) -> Vec<Value> {
                         });
                     // Echo back thought_signature required by Gemini thinking models.
                     // Without this, the API returns a 400 error on subsequent turns.
-                    let mut fc_obj = json!({ "name": func_name, "args": args });
+                    let mut part_obj = json!({
+                        "functionCall": {
+                            "name": func_name,
+                            "args": args
+                        }
+                    });
                     if let Some(sig) = tc["function"]["thought_signature"].as_str() {
-                        fc_obj["thoughtSignature"] = json!(sig);
+                        part_obj["thoughtSignature"] = json!(sig);
                     }
-                    parts.push(json!({ "functionCall": fc_obj }));
+                    parts.push(part_obj);
                 }
                 if !parts.is_empty() {
                     contents.push(json!({ "role": "model", "parts": parts }));
@@ -2206,7 +2280,9 @@ async fn run_google_conversation_loop(
                                     let args = fc.get("args").cloned().unwrap_or(json!({}));
                                     // Capture thought_signature from Gemini thinking models.
                                     // Must be echoed back verbatim in the next turn's history.
-                                    let thought_signature = fc.get("thoughtSignature")
+                                    // Note: `thoughtSignature` is sibling to `functionCall` at the part level,
+                                    // so we fetch it from `part` instead of `fc`.
+                                    let thought_signature = part.get("thoughtSignature")
                                         .and_then(|v| v.as_str())
                                         .map(|s| s.to_string());
                                     let id = format!("call_{}", pending_tool_calls.len());
@@ -2226,7 +2302,6 @@ async fn run_google_conversation_loop(
         }
 
         if !pending_tool_calls.is_empty() {
-            // Guard 1: Max tool-call turns.
             tool_turns += 1;
             if tool_turns > MAX_TOOL_TURNS {
                 let _ = app_handle.emit(
@@ -2236,7 +2311,6 @@ async fn run_google_conversation_loop(
                 break;
             }
 
-            // Guard 2: Total individual tool calls.
             total_tool_calls += pending_tool_calls.len() as u32;
             if total_tool_calls > MAX_TOTAL_TOOL_CALLS {
                 let _ = app_handle.emit(
@@ -2246,7 +2320,6 @@ async fn run_google_conversation_loop(
                 break;
             }
 
-            // Guard 3: Repetition detection.
             let mut repetition_detected = false;
             for tc in &pending_tool_calls {
                 let sig = format!("{}:{}", tc.name, &tc.arguments.chars().take(120).collect::<String>());
@@ -2263,9 +2336,24 @@ async fn run_google_conversation_loop(
             }
             if repetition_detected { break; }
 
+            // Propagate thought_signature if present on any tool call in this turn.
+            // When a thinking model generates multiple tool calls in a single assistant turn,
+            // the streaming API may only attach `thoughtSignature` to the first functionCall.
+            // We must copy it to all functionCalls in the same turn, otherwise the Gemini API
+            // rejects the history with a 400 Bad Request error.
+            let common_thought_sig = pending_tool_calls.iter()
+                .find_map(|tc| tc.thought_signature.clone());
+            if let Some(ref sig) = common_thought_sig {
+                for tc in &mut pending_tool_calls {
+                    if tc.thought_signature.is_none() {
+                        tc.thought_signature = Some(sig.clone());
+                    }
+                }
+            }
+
+            // ── Native functionCall/functionResponse path (supported by ALL Google Gemini models) ──
             let tool_calls_json: Vec<Value> = pending_tool_calls.iter().map(|tc| {
                 let mut func = json!({ "name": tc.name, "arguments": tc.arguments });
-                // Preserve thought_signature so build_google_contents can echo it back.
                 if let Some(sig) = &tc.thought_signature {
                     func["thought_signature"] = json!(sig);
                 }
@@ -2281,7 +2369,6 @@ async fn run_google_conversation_loop(
             });
 
             for tc in &pending_tool_calls {
-                // FIX: log parse errors.
                 let input: Value = match serde_json::from_str(&tc.arguments) {
                     Ok(v) => v,
                     Err(e) => {
@@ -2292,7 +2379,6 @@ async fn run_google_conversation_loop(
                         json!({})
                     }
                 };
-                // FIX: &message_id derefs Arc<str> to &str cleanly.
                 let result = execute_tool(app_handle, &tc.name, &input, project_path, &message_id, no_workspace).await;
                 let _ = app_handle.emit(
                     "ai-chat-tool-result",
@@ -2307,7 +2393,7 @@ async fn run_google_conversation_loop(
                     role: "tool".to_string(),
                     content: json!({
                         "__tool_response__": true,
-                        "tool_call_id": tc.id,   // FIX: was tc.name — must be the call ID, not the function name
+                        "tool_call_id": tc.id,
                         "__func_name__": tc.name,
                         "content": result_str
                     }),
@@ -2315,6 +2401,67 @@ async fn run_google_conversation_loop(
             }
             pending_tool_calls.clear();
         } else {
+            // Text-based Tool Calling Fallback for Google models that don't support
+            // native function calling (e.g. Gemini 3.5 Flash — Text-out model).
+            if let Some(start_idx) = accumulated_text.find("<<<TOOL_CALL:") {
+                if let Some(end_offset) = accumulated_text[start_idx..].find(">>>") {
+                    let absolute_end = start_idx + end_offset;
+                    let inner = accumulated_text[start_idx + "<<<TOOL_CALL:".len()..absolute_end].trim();
+                    let (tool_name, arguments_str) = if let Some(space_idx) = inner.find(' ') {
+                        (inner[..space_idx].trim().trim_end_matches(':').to_string(), inner[space_idx..].trim().to_string())
+                    } else {
+                        (inner.to_string(), String::new())
+                    };
+
+                    let _ = app_handle.emit(
+                        "terminal-output",
+                        format!("[AI Google Fallback] Executing text tool: '{}'", tool_name),
+                    );
+
+                    let _ = app_handle.emit(
+                        "ai-chat-tool-start",
+                        json!({ "name": &tool_name, "id": "fallback_call" }).to_string(),
+                    );
+
+                    let input: Value = serde_json::from_str(&arguments_str).unwrap_or(json!({}));
+                    let result = execute_tool(app_handle, &tool_name, &input, project_path, &message_id, no_workspace).await;
+
+                    let _ = app_handle.emit(
+                        "ai-chat-tool-result",
+                        json!({ "name": &tool_name, "id": "fallback_call", "result": &result }).to_string(),
+                    );
+
+                    let result_str = if result.is_string() {
+                        result.as_str().unwrap().to_string()
+                    } else {
+                        result.to_string()
+                    };
+
+                    // Add assistant response containing the tool call text
+                    messages.push(ChatMessage {
+                        role: "assistant".to_string(),
+                        content: json!(accumulated_text),
+                    });
+
+                    // IMPORTANT: For Text-out Google models (no native FC support),
+                    // we must NOT use __tool_response__ here — that would be converted
+                    // to a functionResponse, causing a 400 "missing thought_signature"
+                    // error because there's no matching functionCall in the history.
+                    // Instead, inject the result as a plain user text message so the
+                    // conversation remains fully text-based on both sides.
+                    messages.push(ChatMessage {
+                        role: "user".to_string(),
+                        content: json!(format!(
+                            "[Tool '{}' result]\n{}",
+                            tool_name, result_str
+                        )),
+                    });
+
+                    // Continue loop for the model to generate a final response
+                    continue;
+                }
+            }
+
             if !accumulated_text.is_empty() {
                 messages.push(ChatMessage {
                     role: "assistant".to_string(),

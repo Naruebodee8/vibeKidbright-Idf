@@ -47,6 +47,41 @@ function ApplyButton({ onApply, targetFile }: { onApply: () => void, targetFile?
 }
 
 
+/** Strip <<<TOOL_CALL: ...>>> fallback tags from text before displaying.
+ *  These tags are used internally by local/text-out models that don't support
+ *  native function calling. They should never be shown to the user.
+ *
+ *  NOTE: We intentionally avoid [^>]* in regex because C code inside the
+ *  JSON content (e.g. `#include <stdio.h>`) contains `>`, which would break
+ *  regex matching. We use indexOf-based string search instead. */
+function stripToolCallTags(text: string): string {
+    const OPEN = "<<<TOOL_CALL:";
+    const CLOSE = ">>>";
+    let result = text;
+
+    // Iteratively remove all complete <<<TOOL_CALL: ...>>> blocks.
+    // Using string search so that > inside the content (e.g. C code) doesn't
+    // interfere with finding the closing >>> marker.
+    let startIdx: number;
+    while ((startIdx = result.indexOf(OPEN)) !== -1) {
+        const closeIdx = result.indexOf(CLOSE, startIdx + OPEN.length);
+        if (closeIdx !== -1) {
+            // Remove from <<< up to and including >>>
+            result = result.substring(0, startIdx) + result.substring(closeIdx + CLOSE.length);
+        } else {
+            // Tag started but not yet closed (still streaming) — hide everything from here
+            result = result.substring(0, startIdx);
+            break;
+        }
+    }
+
+    // Strip plain-text history labels injected by the no-thoughtSignature path
+    result = result.replace(/\[Calling tool: [^\]]+\]\n?/g, "");
+    result = result.replace(/\[Tool '[^']+' result\]\n[\s\S]*?(?=\[|$)/g, "");
+
+    return result.trimEnd();
+}
+
 function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
     projectDir: string, onInjectCode: (newCode: string) => void;
     onApplyToFile: (filePath: string, newCode: string) => void;
@@ -160,7 +195,8 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
         });
 
         const unlistenDelta = listen("ai-chat-delta", (event) => {
-            setStreamingText((prev) => prev + (event.payload as string));
+            const chunk = event.payload as string;
+            setStreamingText((prev) => prev + chunk);
         });
 
         const unlistenToolStart = listen("ai-chat-tool-start", (event) => {
@@ -198,15 +234,17 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
                 setConversationHistory(data.history);
             }
             setStreamingText((prev) => {
+                // Strip any residual fallback tags before committing the final message
+                const finalText = stripToolCallTags(prev);
                 setMessages((msgs) => {
                     const last = msgs[msgs.length - 1];
                     if (last && last.role === "assistant") {
                         return [
                             ...msgs.slice(0, -1),
-                            { ...last, content: prev },
+                            { ...last, content: finalText },
                         ];
                     }
-                    return [...msgs, { id: crypto.randomUUID(), role: "assistant", content: prev }];
+                    return [...msgs, { id: crypto.randomUUID(), role: "assistant", content: finalText }];
                 });
                 return "";
             });
@@ -631,9 +669,11 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
             {/* Header */}
             <div className="h-10 border-b border-[var(--border-subtle)] flex items-center justify-between px-4 bg-[var(--bg-base)]/80 backdrop-blur-sm shrink-0">
                 <div className="flex items-center gap-2">
-                    <div className="w-5 h-5 rounded bg-gradient-to-br from-violet-500 to-rose-600 flex items-center justify-center text-[10px] font-bold text-white shadow-lg shadow-violet-500/20">
-                        AI
-                    </div>
+                    <img 
+                        src="/kidbright-icon.png" 
+                        alt="AI Logo" 
+                        className="w-5 h-5 rounded object-contain shadow-lg"
+                    />
                     <span className="text-xs font-bold text-[var(--text-primary)] tracking-wide">
                         Vibe Coder
                     </span>
@@ -983,7 +1023,10 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
                                         className="w-full bg-[var(--bg-base)] border border-[var(--border-bright)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:border-red-500 transition-colors appearance-none cursor-pointer"
                                         style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")`, backgroundRepeat: "no-repeat", backgroundPosition: "right 12px center" }}
                                     >
-                                        <optgroup label="🔥 Gemini 3.1 Series (Latest Preview)">
+                                        <optgroup label="🆕 Gemini 3.5 (Latest)">
+                                            <option value="gemini-3.5-flash">⭐ Gemini 3.5 Flash (Latest — Text-out)</option>
+                                        </optgroup>
+                                        <optgroup label="🔥 Gemini 3.1 Series (Preview)">
                                             <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Best Reasoning &amp; Coding)</option>
                                             <option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash-Lite (Fastest &amp; Cheapest)</option>
                                             <option value="gemini-3.1-flash-live-preview">Gemini 3.1 Flash Live (Real-time A2A)</option>
@@ -993,7 +1036,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
                                         </optgroup>
                                         <optgroup label="✦ Gemini 2.5 Series (Stable — Recommended)">
                                             <option value="gemini-2.5-pro">Gemini 2.5 Pro (Best Stable)</option>
-                                            <option value="gemini-2.5-flash">⭐ Gemini 2.5 Flash (Best Price/Perf)</option>
+                                            <option value="gemini-2.5-flash">Gemini 2.5 Flash (Best Price/Perf)</option>
                                             <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite (Budget)</option>
                                         </optgroup>
                                         <optgroup label="⚠️ Gemini 2.0 (Deprecated)">
@@ -1211,7 +1254,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
                 {isLoading && streamingText && (
                     <div className="flex justify-start">
                         <div className="max-w-[90%] rounded-xl rounded-bl-sm px-4 py-3 bg-[var(--bg-elevated)]/80 text-[var(--text-primary)] text-sm leading-relaxed border border-[var(--border-subtle)]">
-                            <div className="prose-sm">{renderMarkdown(streamingText)}</div>
+                            <div className="prose-sm">{renderMarkdown(stripToolCallTags(streamingText))}</div>
                             <span className="inline-block w-1.5 h-4 bg-violet-400 animate-pulse ml-0.5 align-middle" />
                         </div>
                     </div>

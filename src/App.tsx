@@ -1042,9 +1042,11 @@ function App() {
       {/* Sidebar */}
       <div className="w-64 border-r border-[var(--border-subtle)] bg-[var(--bg-surface)]/50 backdrop-blur-xl flex flex-col shrink-0 z-20">
         <div className="p-4 flex items-center gap-3 border-b border-[var(--border-normal)]">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
-            <span className="text-white text-lg font-bold">V</span>
-          </div>
+          <img 
+            src="/kidbright-icon.png" 
+            alt="vibeKidbright Logo" 
+            className="w-8 h-8 rounded-lg object-contain shadow-lg"
+          />
           <div>
             <h1 className="text-sm font-bold tracking-tight text-[var(--text-primary)]">vibeKidbright</h1>
             <p className="text-[10px] text-[var(--text-muted)] font-medium">ESP-IDF IDE & AI Assistant</p>

@@ -77,22 +77,28 @@ $FailCount    = 0
 
 foreach ($Installer in $Installers) {
     Write-Host "[...] กำลังเซ็น: $($Installer.Name)"
-    
-    $result = & $SignTool sign `
-        /fd $DigestAlgo `
-        /f  $PfxPath `
-        /p  $env:CERT_PASSWORD `
-        /tr $TimestampUrl `
-        /td $DigestAlgo `
-        /v  `
-        $Installer.FullName 2>&1
 
-    if ($LASTEXITCODE -eq 0) {
+    # ไม่ใช้ $result = ... 2>&1 เพราะ signtool.exe ไม่รองรับบน CI
+    # ใช้ Start-Process แทน เพื่อหลีกเลี่ยง StandardOutputEncoding error
+    $proc = Start-Process -FilePath $SignTool `
+        -ArgumentList @(
+            "sign",
+            "/fd", $DigestAlgo,
+            "/f",  $PfxPath,
+            "/p",  $env:CERT_PASSWORD,
+            "/tr", $TimestampUrl,
+            "/td", $DigestAlgo,
+            $Installer.FullName
+        ) `
+        -Wait `
+        -PassThru `
+        -NoNewWindow
+
+    if ($proc.ExitCode -eq 0) {
         Write-Host "[OK] เซ็นสำเร็จ: $($Installer.Name)"
         $SuccessCount++
     } else {
-        Write-Warning "[FAIL] เซ็นไม่สำเร็จ: $($Installer.Name)"
-        Write-Host $result
+        Write-Warning "[FAIL] เซ็นไม่สำเร็จ: $($Installer.Name) (ExitCode=$($proc.ExitCode))"
         $FailCount++
     }
 }

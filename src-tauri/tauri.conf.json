@@ -37,7 +37,6 @@
       "icons/icon.ico"
     ],
     "windows": {
-      "certificateThumbprint": "$CERT_THUMBPRINT",
       "digestAlgorithm": "sha256",
       "timestampUrl": "http://timestamp.digicert.com"
     }

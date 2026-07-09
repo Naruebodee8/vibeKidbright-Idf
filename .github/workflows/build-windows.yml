@@ -28,14 +28,13 @@ jobs:
         run: npm install
 
       # ── Code Signing: Decode PFX จาก GitHub Secret ──────────────────────────
-      # ถ้าไม่มี Secret CERT_PFX_BASE64 ขั้นตอนนี้จะ skip อัตโนมัติ
       - name: Decode PFX Certificate
         shell: pwsh
         env:
           CERT_PFX_BASE64: ${{ secrets.CERT_PFX_BASE64 }}
         run: |
           if (-not $env:CERT_PFX_BASE64) {
-            Write-Host "No CERT_PFX_BASE64 secret found — skipping code signing setup"
+            Write-Host "No CERT_PFX_BASE64 secret — skipping certificate setup"
             exit 0
           }
           $pfxDir = "$env:RUNNER_TEMP\cert"
@@ -45,13 +44,11 @@ jobs:
           "CERT_PFX_PATH=$pfxPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "PFX decoded OK: $pfxPath"
 
-      # ── Tauri Build + Auto-Sign ──────────────────────────────────────────────
+      # ── Tauri Build (ไม่มี auto-sign — signing ทำหลัง build ด้วย signtool) ──
       - name: Build and Create Release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CERT_THUMBPRINT: ${{ secrets.CERT_THUMBPRINT }}
-          CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
         with:
           tagName: v__VERSION__
           releaseName: 'vibeKidbright v__VERSION__ (Windows)'
@@ -59,20 +56,24 @@ jobs:
           releaseDraft: true
           prerelease: false
 
-      # ── Code Signing: เซ็น installer ซ้ำด้วย sign-installer.ps1 ─────────────
-      # ถ้าไม่มี PFX (ไม่ได้ตั้ง Secret) จะ skip อัตโนมัติ
+      # ── Code Signing: เซ็น installer ด้วย signtool หลัง build เสร็จ ─────────
       - name: Sign Installer Files
         shell: pwsh
         env:
           CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
         run: |
           if (-not $env:CERT_PFX_PATH) {
-            Write-Host "No certificate path found — skipping manual signing step"
+            Write-Host "No CERT_PFX_PATH — skipping signing"
             exit 0
           }
+          if (-not (Test-Path $env:CERT_PFX_PATH)) {
+            Write-Host "PFX file not found at: $env:CERT_PFX_PATH — skipping signing"
+            exit 0
+          }
+          Write-Host "Signing with PFX: $env:CERT_PFX_PATH"
           .\scripts\sign-installer.ps1
 
-      # ── Cleanup: ลบไฟล์ PFX ชั่วคราว ────────────────────────────────────────
+      # ── Cleanup: ลบ PFX ชั่วคราว ─────────────────────────────────────────────
       - name: Cleanup Certificate
         if: always()
         shell: pwsh

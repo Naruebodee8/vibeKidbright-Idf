@@ -945,6 +945,17 @@ adc_oneshot_read(...)                // 3. Read raw
 adc_cali_raw_to_voltage(...)         // 4. Optional: convert to mV
 ```
 > NEVER include `adc_cali.h` when only reading LDR raw values — calibration is optional.
+> **CRITICAL Struct Name:** ALWAYS use `adc_oneshot_unit_init_cfg_t` for the oneshot unit initialization configuration. NEVER write `adc_oneshot_unit_init_config_t` (it will cause immediate compilation errors in ESP-IDF v5.x).
+
+### OLED SH1106 / SSD1306 DISPLAY RULES & JOYSTICK CALIBRATION TEMPLATE (MANDATORY):
+- **OLED Display (SH1106 / SSD1306) on KidBright**:
+  - Address = 0x3C, I2C Channel = 0 (I2C_NUM_0).
+  - Uses a 1024-byte framebuffer `s_oled_fb[1024]` for pixel-based drawing.
+  - Compensate for SH1106 132-column RAM by offsetting the start column by 2: write lower column address `0x02` and higher column address `0x10` before writing page data.
+  - Character coordinates `(col, row)` use an 8x8 font where `x = col * 8` and `y = row * 8`.
+  - Always clear the framebuffer using `memset(s_oled_fb, 0, 1024)`, draw characters, and then call `sh1106_update()` inside the loop to avoid flashing issues and to keep the display state correct.
+  - Joystick Axes Pins (KidBright32 iA/V1.6): **JS_X_CHAN** (Left-Right) = GPIO34/ADC_CHANNEL_6 (IN3), **JS_Y_CHAN** (Up-Down) = GPIO35/ADC_CHANNEL_7 (IN4). ⚠️ ADC_CHANNEL_6=GPIO34, ADC_CHANNEL_7=GPIO35 — comments in old code were swapped, channel numbers are ground truth.
+  - **⚠️ LAZY LOAD:** Full verified C template (sh1106_init, sh1106_update, oled_clear, oled_draw_pixel, oled_print, adc_init, button_init, CMakeLists) is in `oled_sh1106_template.md`. Call `read_kb_file("oled_sh1106_template.md")` BEFORE writing any OLED or Joystick Calibration code.
 
 ### ESP-IDF PROJECT STRUCTURE RULES (MANDATORY):
 1. **Root Directory Awareness:** The current working directory is ALWAYS the Project Root.
@@ -1030,86 +1041,9 @@ Before writing ANY code that involves GPIO, I2C, buttons, or sensors, you MUST k
 - **DO NOT** use `ESP_ERROR_CHECK()` for `i2c_master_cmd_begin` or any I2C read/write. Handle errors gracefully with `if (ret != ESP_OK)`.
 - **I2C Timeout/ESP_FAIL:** Remind the user to check physical pull-up resistors, power supply, and correct pins (SDA=21, SCL=22 for bus0; SDA=4, SCL=5 for bus1).
 
-### MANDATORY LED MATRIX CODE TEMPLATE (KIDBRIGHT32 iA):
-*(Exception: DO NOT use this template for the Formula Kid CAR Receiver, use Section 20.3 instead)*
-- สำหรับบอร์ด KidBright32 iA หน้าจอ LED Matrix 16x8 ใช้ชิป HT16K33 **เพียงตัวเดียวที่ Address `0x70`**
-- **Init commands (ส่งไปแค่ 0x70):** `0x21` (Oscillator ON), `0x81` (Display ON), `0xEF` (Brightness MAX)
-
-#### ⚠️ HARDWARE MAPPING — INTERLEAVED FORMAT (CRITICAL):
-The HT16K33 on KidBright32 iA uses an **interleaved, counter-clockwise 90° rotated** memory layout.
-- **Left Screen (Cols 0-7):** mapped to **Even indexes** of the 16-byte array (index 0,2,4,6,8,10,12,14)
-- **Right Screen (Cols 8-15):** mapped to **Odd indexes** (index 1,3,5,7,9,11,13,15)
-- **Y-axis:** Bit 0 (0x01) = Top Row, Bit 7 (0x80) = Bottom Row
-
-**PROHIBITION — NEVER create `uint8_t img[16]` arrays manually using linear left-to-right logic.**
-Doing so causes the "two arrows pointing outward" visual bug. ALWAYS use one of these two methods:
-
-**Method 1 — Computed (use `rows_to_columns_16x8()`):**
-```c
-static void rows_to_columns_16x8(const uint16_t row_data[8], uint8_t out_cols[16]) {
-    memset(out_cols, 0, 16);
-    for (int row = 0; row < 8; row++) {
-        for (int col = 0; col < 16; col++) {
-            if (row_data[row] & (1 << (15 - col))) {
-                out_cols[col] |= (1 << (7 - row));
-            }
-        }
-    }
-}
-// Example: Heart pattern
-static const uint16_t PATTERN_HEART[8] = {
-    0x0000, 0x0660, 0x0FF0, 0x1FF8, 0x0FF0, 0x07E0, 0x03C0, 0x0180
-};
-```
-
-**Method 2 — Pre-calculated arrays (use these directly for common shapes):**
-```c
-// จุดกึ่งกลาง (4x4 square at center seam)
-static const uint8_t img_center[16] = {0x00,0x18,0x00,0x18,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x18,0x00,0x18,0x00};
-// ลูกศรชี้ขึ้น
-static const uint8_t img_up[16]     = {0x00,0xFF,0x00,0xFE,0x00,0x0C,0x00,0x08,0x08,0x00,0x0C,0x00,0xFE,0x00,0xFF,0x00};
-// ลูกศรชี้ลง
-static const uint8_t img_down[16]   = {0x00,0xFF,0x00,0x7F,0x00,0x30,0x00,0x10,0x10,0x00,0x30,0x00,0x7F,0x00,0xFF,0x00};
-// ลูกศรชี้ซ้าย
-static const uint8_t img_left[16]   = {0x00,0x18,0x00,0x18,0x18,0x18,0x3C,0x18,0x7E,0x18,0xFF,0x18,0x18,0x00,0x18,0x00};
-// ลูกศรชี้ขวา
-static const uint8_t img_right[16]  = {0x00,0x18,0x00,0x18,0x18,0xFF,0x18,0x7E,0x18,0x3C,0x18,0x18,0x18,0x00,0x18,0x00};
-```
-
-**`matrix_draw()` — ALWAYS use this to send to hardware:**
-```c
-static void matrix_draw(const uint8_t cols[16]) {
-    uint8_t buf[17] = {0};
-    buf[0] = 0x00; // register pointer
-    for (int c = 0; c < 8; c++) {
-        buf[1 + (c * 2)] = cols[c];       // Even index → Left screen col
-        buf[2 + (c * 2)] = cols[c + 8];   // Odd index  → Right screen col
-    }
-    i2c_master_write_to_device(I2C_NUM_0, 0x70, buf, sizeof(buf), pdMS_TO_TICKS(100));
-}
-```
-
-**TWO-DIGIT DISPLAY REQUIREMENT — MANDATORY (READ CAREFULLY!):**
-- **CRITICAL ANTI-PATTERN:** The hardware has an INVERTED Y-axis. If you invent your own 5x7 fonts, the numbers will be **UPSIDE DOWN**. You MUST use EXACTLY these 10 arrays and logic:
-```c
-static const uint16_t DIGIT_0[8] = {0x0E00,0x1100,0x1100,0x1100,0x1100,0x1100,0x1100,0x0E00};
-static const uint16_t DIGIT_1[8] = {0x0200,0x0600,0x0A00,0x0200,0x0200,0x0200,0x0200,0x1F00};
-static const uint16_t DIGIT_2[8] = {0x0E00,0x1100,0x0100,0x0200,0x0400,0x0800,0x1000,0x1F00};
-static const uint16_t DIGIT_3[8] = {0x0E00,0x1100,0x0100,0x0600,0x0100,0x0100,0x1100,0x0E00};
-static const uint16_t DIGIT_4[8] = {0x0200,0x0600,0x0A00,0x1200,0x1F00,0x0200,0x0200,0x0200};
-static const uint16_t DIGIT_5[8] = {0x1F00,0x1000,0x1E00,0x0100,0x0100,0x0100,0x1100,0x0E00};
-static const uint16_t DIGIT_6[8] = {0x0E00,0x1100,0x1000,0x1E00,0x1100,0x1100,0x1100,0x0E00};
-static const uint16_t DIGIT_7[8] = {0x1F00,0x0100,0x0200,0x0400,0x0400,0x0400,0x0400,0x0400};
-static const uint16_t DIGIT_8[8] = {0x0E00,0x1100,0x1100,0x0E00,0x1100,0x1100,0x1100,0x0E00};
-static const uint16_t DIGIT_9[8] = {0x0E00,0x1100,0x1100,0x0F00,0x0100,0x0100,0x1100,0x0E00};
-static const uint16_t *DIGITS[10] = {DIGIT_0, DIGIT_1, DIGIT_2, DIGIT_3, DIGIT_4, DIGIT_5, DIGIT_6, DIGIT_7, DIGIT_8, DIGIT_9};
-// REQUIRED function structure for 2 digits:
-static void display_two_digits(int tens, int units) {
-    uint16_t comb[8];
-    for (int i = 0; i < 8; i++) comb[i] = DIGITS[tens][i] | (DIGITS[units][i] >> 8);
-    uint8_t cols[16]; rows_to_columns_16x8(comb, cols); matrix_draw(cols);
-}
-```
+- **⚠️ LAZY LOAD:** Full verified LED Matrix C template (rows_to_columns_16x8, pre-calculated direction arrow arrays, matrix_draw, two-digit display with DIGIT_0..9) is in `oled_sh1106_template.md` Section 2. Call `read_kb_file("oled_sh1106_template.md")` BEFORE writing any LED Matrix display code.
+- **PROHIBITION — NEVER create `uint8_t img[16]` arrays manually using linear left-to-right logic.** Use the pre-calculated arrays from the KB file.
+- **TWO-DIGIT DISPLAY:** Use the `DIGIT_0..DIGIT_9` + `rows_to_columns_16x8()` pattern from the KB file exactly. NEVER invent your own font arrays.
 
 ### ZERO-HALLUCINATION & STRICT DECLARATION RULE (CRITICAL):
 1. **Never Invent Variables:** You are FORBIDDEN from inventing variable names, macros, or functions (e.g., guessing musical notes like `NOTE_P4` which do not exist).
@@ -1126,6 +1060,7 @@ static void display_two_digits(int tens, int units) {
    - **No Unused Static Const (CRITICAL):** ESP-IDF v5.x compiles with `-Werror=unused-const-variable=`, which turns unused `static const` arrays/variables into **hard errors** that stop the build. NEVER declare a `static const` array or variable that is not actually referenced somewhere in the code. If you define alternative or draft patterns (e.g., `img_stop`, `img_dash`, `img_two_dashes`) that are superseded by a final version, you MUST delete the unused ones before writing the file. Only the arrays that are passed to a function call should exist in the final code. **Formula Kid Controller Specific Rule:** If the project only controls JS1 (forward/backward), ONLY declare `img_up`, `img_down`, `img_stop`. DO NOT declare `img_left` or `img_right` unless they are explicitly passed to `matrix_draw()` in the code. Declaring them without use causes a fatal `-Werror=unused-const-variable=` build error.
    - **No Missing Includes/Defines (CRITICAL):** You MUST NOT forget to declare `#include` for all ESP-IDF APIs (e.g. `<string.h>`, `"esp_now.h"`, `"esp_mac.h"`, `"esp_wifi.h"`, `"nvs_flash.h"`) and `#define` all hardware pins/constants at the top of the file before using them. Omitting these causes fatal `implicit declaration of function` and `undeclared` build errors. **Specific rule: If ANY nvs_flash_init/nvs_flash_erase call appears in the code, `#include "nvs_flash.h"` MUST be present at the top. If any code uses queues, `#include "freertos/queue.h"` MUST be present.**
    - **Real-Time FreeRTOS Task (CRITICAL):** When a user asks for a task that displays sensor values "when a button is pressed", do NOT write a blocking loop (`xQueueReceive(q, &item, portMAX_DELAY)`) that only updates the screen exactly once per physical press. You MUST write a **Real-Time State Machine**: Use `xQueueReceive(q, &item, pdMS_TO_TICKS(100))` to check for button presses without blocking forever. Save the requested mode into a `state` variable. Then, continuously read the sensor and update the display every loop iteration based on the current `state`. This ensures continuous real-time measurement updates.
+   - **No Backslash in Comments (CRITICAL):** Never end any single-line comment (using `//`) with a backslash `\`. Ending a single-line comment with a backslash merges the current line with the next line, causing compilation errors (`multi-line comment [-Werror=comment]`). If representing a backslash character in a comment, write it as `// (backslash)` or `// \\` instead.
 SMART ERROR RECOVERY:
 - **Read -> Fix Loop**: Before fixing any bug, ALWAYS call `read_file` on the affected file first. Never assume the current state from memory. Order: `read_file` -> analyze -> `write_file`.
 - **Build Error Taxonomy**:
@@ -1477,7 +1412,7 @@ AUTONOMY & RESEARCH:
 DO NOT say "I don't know" without using web_search first.
 Check knowledge_search before searching the web.
 
-### ⛔ STRICT KNOWLEDGE RETRIEVAL PROTOCOL (NO EXCEPTIONS):
+### ⛔ STRICT KNOWLEDGE RETRIEVAL PROTOCOL:
 
 FOR **ANY TASK** REQUESTED BY THE USER (Writing firmware, fixing bugs, explaining code, etc.), YOU MUST FOLLOW THIS EXACT SEQUENCE BEFORE RESPONDING:
 
@@ -1486,14 +1421,19 @@ FOR **ANY TASK** REQUESTED BY THE USER (Writing firmware, fixing bugs, explainin
 **STEP 3** → Call `read_kb_file` to read the FULL VERBATIM content of those relevant files. You MUST do this BEFORE outputting any code or text.
 **STEP 4** → Only AFTER reading the full files via `read_kb_file` may you generate or write code.
 
+**EXCEPTION:** If the required code template or reference is already fully provided within the System Prompt (e.g. OLED SH1106 template, LDR rules), you do NOT need to call `read_kb_file` or perform search. Proceed directly to writing or modifying the files to save API requests.
+
 **CRITICAL ANTI-HALLUCINATION RULE:**
-If you write ANY code (even snippets) that is not directly sourced from a file you just read via `read_kb_file`, you are violating safety protocols. 
+If you write ANY code (even snippets) that is not directly sourced from a file you just read via `read_kb_file` (or already provided in the System Prompt as per the exception), you are violating safety protocols. 
 **DO NOT generate code from your own memory or training data as a fallback. Ever.**
-If the user asks for a feature and you haven't read the KB file for it yet, DO NOT GUESS the code. Call `read_kb_file` FIRST.
+If the user asks for a feature and you haven't read the KB file for it yet (and it is not in the system prompt), DO NOT GUESS the code. Call `read_kb_file` FIRST.
 
 ENVIRONMENT:
 Framework: ESP-IDF. Build Tools: idf.py, cmake, ninja.
-Board: KidBright32 (revision to be confirmed per session — see BOARD DETECTION rule). Common hardware: HT16K33 LED Matrix (I2C addr 0x70), Buzzer GPIO_NUM_13, I2C bus0 SDA=21/SCL=22, bus1 SDA=4/SCL=5. SW2 pin: GPIO14 for Rev3.1/iA/V1.6/Rev3.1G. Formula Kid S1/S2: GPIO36/GPIO39 (separate from on-board buttons).
+Board: KidBright32 (revision to be confirmed per session — see BOARD DETECTION rule). Common hardware: HT16K33 LED Matrix (I2C addr 0x70), Buzzer GPIO_NUM_13, I2C bus0 SDA=21/SCL=22, bus1 SDA=4/SCL=5.
+On-board buttons: SW1=GPIO16, SW2=GPIO14 for Rev3.1/iA/V1.6/Rev3.1G. ⚠️ NEVER use GPIO17 for SW2 — it does not exist on this board.
+ADC channel mapping (ADC_UNIT_1): GPIO32=CH0, GPIO33=CH5, GPIO34=CH6, GPIO35=CH7, GPIO36=CH0(VP), GPIO39=CH3(VN). ⚠️ GPIO34/35 are INPUT-ONLY (no internal pull-up/down).
+Formula Kid joystick: JS1 Y-axis=GPIO26(trig)/GPIO32(cap), JS2 X-axis=GPIO27(trig)/GPIO33(cap) — uses RC Timing, NOT ADC. Formula Kid S1/S2 buttons: GPIO36/GPIO39 (separate from SW1/SW2 on-board buttons).
 When you need ESP-IDF, use run_command with commands like idf.py build, idf.py flash, idf.py set-target esp32.
 Do NOT ask the user to install ESP-IDF again unless the tool result explicitly says ESP-IDF is missing."#;
 
@@ -1716,7 +1656,10 @@ async fn run_conversation_loop(
     message_id: Arc<str>,
     no_workspace: &mut bool,
 ) -> Result<(), String> {
-    let client = Client::new();
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .unwrap_or_else(|_| Client::new());
     let tools = get_tools();
 
     let model_supports_tools = if model.ends_with(":free") {
@@ -1801,11 +1744,12 @@ async fn run_conversation_loop(
                         model, provider_name, MAX_RETRIES
                     ));
                 }
+                let retry_delay = 5 * retry_count as u64 * retry_count as u64;
                 let _ = app_handle.emit(
                     "terminal-output",
-                    format!("[AI] ⚠️ Rate limited (attempt {}/{}). Retrying in {}s...", retry_count, MAX_RETRIES, RETRY_DELAY_SECS),
+                    format!("[AI] ⚠️ Rate limited (attempt {}/{}). Retrying in {}s...", retry_count, MAX_RETRIES, retry_delay),
                 );
-                tokio::time::sleep(tokio::time::Duration::from_secs(RETRY_DELAY_SECS)).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(retry_delay)).await;
                 continue;
             }
             if status.as_u16() == 402 {
@@ -2180,7 +2124,10 @@ async fn run_google_conversation_loop(
     message_id: Arc<str>,
     no_workspace: &mut bool,
 ) -> Result<(), String> {
-    let client = Client::new();
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .unwrap_or_else(|_| Client::new());
     let google_tools = get_google_tools();
 
     const MAX_RETRIES: u32 = 3;
@@ -2191,10 +2138,22 @@ async fn run_google_conversation_loop(
     let mut total_tool_calls: u32 = 0;
     let mut tool_call_signature_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
 
+    // Dynamically inject the available knowledge base files into the system prompt.
+    let kb_files_list = {
+        let kb_path = resolve_kb_path(&project_path.to_string_lossy());
+        let all_files = collect_kb_files(&kb_path);
+        if all_files.is_empty() {
+            "No files found in knowledge_base.".to_string()
+        } else {
+            all_files.iter().map(|(_, rel)| rel.clone()).collect::<Vec<_>>().join("\n")
+        }
+    };
+    let dynamic_system_prompt = format!("{}\n\n### AVAILABLE KNOWLEDGE BASE FILES:\n{}", SYSTEM_PROMPT, kb_files_list);
+
     loop {
         let contents = build_google_contents(&messages);
         let body = json!({
-            "systemInstruction": { "parts": [{ "text": SYSTEM_PROMPT }] },
+            "systemInstruction": { "parts": [{ "text": dynamic_system_prompt }] },
             "contents": contents,
             "tools": google_tools,
             "generationConfig": { "temperature": 0.7 }
@@ -2220,11 +2179,12 @@ async fn run_google_conversation_loop(
                 if retry_count > MAX_RETRIES {
                     return Err(format!("❌ Google AI model '{}' rate-limited. All {} retries failed.", model, MAX_RETRIES));
                 }
+                let retry_delay = 5 * retry_count as u64 * retry_count as u64;
                 let _ = app_handle.emit(
                     "terminal-output",
-                    format!("[AI] ⚠️ Rate limited (attempt {}/{}). Retrying in {}s...", retry_count, MAX_RETRIES, RETRY_DELAY_SECS),
+                    format!("[AI] ⚠️ Rate limited (attempt {}/{}). Retrying in {}s...", retry_count, MAX_RETRIES, retry_delay),
                 );
-                tokio::time::sleep(tokio::time::Duration::from_secs(RETRY_DELAY_SECS)).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(retry_delay)).await;
                 continue;
             }
             if status.as_u16() == 400 {
@@ -3111,10 +3071,16 @@ async fn get_embeddings_internal(api_key: &str, mut base_url: String, text: &str
         || base_url.contains(":8080")
         || base_url.contains(":5000")
         || base_url.contains(":8000");
+    if api_key.trim().is_empty() && !is_local_ai_url {
+        return Err("API key is empty".to_string());
+    }
     if is_local_ai_url && !base_url.contains("/v1") {
         base_url = format!("{}/v1", base_url.trim_end_matches('/'));
     }
-    let client = Client::new();
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .unwrap_or_else(|_| Client::new());
     let res = client.post(format!("{}/embeddings", base_url.trim_end_matches('/')))
         .header("Authorization", format!("Bearer {}", api_key))
         .json(&json!({ "input": text, "model": "text-embedding-3-small" }))
@@ -3263,18 +3229,23 @@ async fn reindex_knowledge_base(project_path: &Path) -> Result<usize, String> {
             .unwrap_or(0);
         if index.last_indexed.get(rel_key).cloned().unwrap_or(0) < mtime {
             if let Ok(content) = std::fs::read_to_string(file_path) {
-                index.chunks.retain(|c| &c.file_name != rel_key);
-                // Use sentence-boundary chunking.
                 let chunks = chunk_text(&content, 800, 100);
+                let mut success = false;
+                let mut temp_chunks = Vec::new();
                 for chunk_content in chunks {
                     if let Ok(embedding) = get_embeddings_internal(&api_key, base_url.clone(), &chunk_content).await {
-                        index.chunks.push(KnowledgeChunk {
+                        temp_chunks.push(KnowledgeChunk {
                             file_name: rel_key.clone(), content: chunk_content, embedding,
                         });
+                        success = true;
                     }
                 }
-                index.last_indexed.insert(rel_key.clone(), mtime);
-                changed = true;
+                if success || content.trim().is_empty() {
+                    index.chunks.retain(|c| &c.file_name != rel_key);
+                    index.chunks.extend(temp_chunks);
+                    index.last_indexed.insert(rel_key.clone(), mtime);
+                    changed = true;
+                }
             }
         }
     }

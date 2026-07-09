@@ -84,6 +84,7 @@ jobs:
 
       # ── Upload ไฟล์ที่เซ็นแล้วขึ้น GitHub Release ────────────────────────────
       - name: Create GitHub Release
+        id: create_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.get_version.outputs.version }}
@@ -97,6 +98,31 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # ── Submit to winget (รันหลังจากปล่อย Release สำเร็จ) ───────────────────
+      - name: Submit to winget
+        id: winget_submit
+        if: steps.create_release.outcome == 'success'
+        shell: pwsh
+        env:
+          WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
+        run: |
+          if (-not $env:WINGET_GITHUB_TOKEN) {
+            Write-Host "No WINGET_GITHUB_TOKEN secret — skipping winget submission"
+            exit 0
+          }
+          Write-Host "Downloading wingetcreate..."
+          Invoke-WebRequest -Uri "https://github.com/microsoft/winget-create/releases/download/v1.6.2.0/wingetcreate.exe" -OutFile "$env:TEMP\wingetcreate.exe"
+          
+          $version = "${{ steps.get_version.outputs.version }}"
+          $url = "https://github.com/Naruebodee8/vibeKidbright-Idf/releases/download/v$version/Kidbright_IDE_${version}_x64-setup.exe"
+          
+          Write-Host "Submitting version $version to winget..."
+          & "$env:TEMP\wingetcreate.exe" update Naruebodee8.VibeKidbrightIDE `
+            --version $version `
+            --urls $url `
+            --token $env:WINGET_GITHUB_TOKEN `
+            --submit
+
       # ── Cleanup: ลบ PFX ชั่วคราว ─────────────────────────────────────────────
       - name: Cleanup Certificate
         if: always()
@@ -108,3 +134,4 @@ jobs:
           } else {
             Write-Host "No certificate file to clean up."
           }
+

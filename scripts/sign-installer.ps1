@@ -85,12 +85,15 @@ $FailCount    = 0
 foreach ($Installer in $Installers) {
     Write-Host "[...] กำลังเซ็น: $($Installer.Name)"
 
+    # Trim password in case it was pasted with a newline in GitHub Secrets
+    $cleanPassword = $env:CERT_PASSWORD.Trim()
+
     # ใช้ & โดยตรง — ไม่ capture output ($result = ...) และไม่ใช้ 2>&1
     # เพราะ signtool.exe ไม่รองรับ StandardOutputEncoding บน CI
     & $SignTool sign `
         /fd $DigestAlgo `
         /f  "$PfxPath" `
-        /p  "$($env:CERT_PASSWORD)" `
+        /p  "$cleanPassword" `
         /tr $TimestampUrl `
         /td $DigestAlgo `
         "$($Installer.FullName)"

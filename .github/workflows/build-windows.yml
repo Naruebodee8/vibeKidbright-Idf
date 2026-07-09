@@ -2,7 +2,8 @@ name: Build Windows Installer
 
 on:
   push:
-    branches: [ main ]
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -101,6 +102,7 @@ jobs:
       # ── Submit to winget (รันหลังจากปล่อย Release สำเร็จ) ───────────────────
       - name: Submit to winget
         id: winget_submit
+        continue-on-error: true
         if: steps.create_release.outcome == 'success'
         shell: pwsh
         env:

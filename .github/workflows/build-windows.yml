@@ -19,7 +19,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20 # เวอร์ชันตามที่ระบุใน README ของโปรเจกต์
+          node-version: 20
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -27,13 +27,54 @@ jobs:
       - name: Install Frontend Dependencies
         run: npm install
 
+      # ── Code Signing: Decode PFX จาก GitHub Secret ──────────────────────────
+      # ต้องตั้ง GitHub Secrets ก่อน:
+      #   CERT_PFX_BASE64  – ค่า base64 ของไฟล์ codesign.pfx
+      #   CERT_PASSWORD    – password ที่ใช้ตอน export .pfx
+      #   CERT_THUMBPRINT  – thumbprint ของ certificate (ตัวอักษรพิมพ์ใหญ่)
+      - name: Decode PFX Certificate
+        if: ${{ secrets.CERT_PFX_BASE64 != '' }}
+        shell: pwsh
+        run: |
+          $pfxDir = "$env:RUNNER_TEMP\cert"
+          New-Item -ItemType Directory -Path $pfxDir -Force | Out-Null
+          $pfxPath = "$pfxDir\codesign.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String("${{ secrets.CERT_PFX_BASE64 }}"))
+          echo "CERT_PFX_PATH=$pfxPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "PFX decoded OK: $pfxPath"
+
+      # ── Tauri Build + Auto-Sign via tauri.conf.json ──────────────────────────
       - name: Build and Create Release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # ตัวแปร CERT_THUMBPRINT และ CERT_PASSWORD ส่งให้ Tauri ใช้เซ็นอัตโนมัติ
+          # ผ่าน bundle.windows.certificateThumbprint = "$CERT_THUMBPRINT" ใน tauri.conf.json
+          CERT_THUMBPRINT: ${{ secrets.CERT_THUMBPRINT }}
+          CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
         with:
-          tagName: v__VERSION__ # ดึงเวอร์ชันจาก tauri.conf.json อัตโนมัติ
+          tagName: v__VERSION__
           releaseName: 'vibeKidbright v__VERSION__ (Windows)'
           releaseBody: 'ดาวน์โหลดไฟล์ .msi หรือ .exe ด้านล่างเพื่อติดตั้งบน Windows'
-          releaseDraft: true # สร้างเป็น Draft ไว้ก่อน เผื่อให้คุณเข้าไปตรวจสอบก่อนกด Publish
+          releaseDraft: true
           prerelease: false
+
+      # ── Code Signing: เซ็น installer ซ้ำด้วย sign-installer.ps1 ─────────────
+      # (fallback กรณี Tauri auto-sign ทำงานไม่ครบ หรือต้องการเซ็น NSIS .exe เพิ่ม)
+      - name: Sign Installer Files
+        if: ${{ secrets.CERT_PFX_BASE64 != '' }}
+        shell: pwsh
+        env:
+          CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
+        run: |
+          .\scripts\sign-installer.ps1
+
+      # ── Cleanup: ลบไฟล์ PFX ชั่วคราว ────────────────────────────────────────
+      - name: Cleanup Certificate
+        if: always() && ${{ secrets.CERT_PFX_BASE64 != '' }}
+        shell: pwsh
+        run: |
+          if ($env:CERT_PFX_PATH -and (Test-Path $env:CERT_PFX_PATH)) {
+            Remove-Item $env:CERT_PFX_PATH -Force
+            echo "Certificate file removed."
+          }

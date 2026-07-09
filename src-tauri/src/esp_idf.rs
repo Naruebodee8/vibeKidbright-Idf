@@ -1169,11 +1169,11 @@ pub async fn stop_serial_monitor() -> Result<String, String> {
 
 /// ชื่อ GitHub repo ในรูปแบบ "owner/repo"
 /// ⚠️ แก้ให้ตรงกับ repo จริงของคุณ Kao ก่อน deploy!
-const GITHUB_REPO: &str = "your-github-username/vibeKidbright";
+const GITHUB_REPO: &str = "Naruebodee8/vibeKidbright-Idf";
 
 /// ชื่อไฟล์ asset ของ toolchain ZIP ใน GitHub Releases
 /// ต้องตรงกับชื่อไฟล์ที่คุณ Kao อัปโหลดไว้จริงๆ
-const TOOLCHAIN_ASSET_NAME: &str = "kb_toolchain_v1.zip";
+const TOOLCHAIN_ASSET_NAME: &str = "Kidbright_tool.3.zip";
 
 /// Event ที่ emit ไปยัง frontend เพื่อแสดง progress การดาวน์โหลด
 #[derive(serde::Serialize, Clone)]

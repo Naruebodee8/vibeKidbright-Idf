@@ -32,3 +32,9 @@ resources/.espressif/
 *.temp
 *.swp
 *.swo
+
+# Code Signing — ห้าม commit ไฟล์เหล่านี้เด็ดขาด!
+certs/
+*.pfx
+*.pfx.b64
+*.p12

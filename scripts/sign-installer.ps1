@@ -4,28 +4,35 @@
 #
 # ใช้งานบนเครื่อง local:
 #   $env:CERT_PASSWORD = "your-password"
-#   $env:CERT_PFX_PATH = ".\certs\codesign.pfx"   # optional, ถ้าไม่ตั้งใช้ค่า default
+#   $env:CERT_PFX_PATH = ".\certs\codesign.pfx"   # optional
 #   .\scripts\sign-installer.ps1
 #
-# ใช้งานบน CI (GitHub Actions) จะถูกเรียกอัตโนมัติ หลัง tauri build
+# ใช้งานบน CI (GitHub Actions): ถูกเรียกอัตโนมัติหลัง tauri build
 # ============================================================
 
 # ── ค้นหา signtool.exe ──────────────────────────────────────────
 function Find-SignTool {
-    $candidates = @(
-        # Windows 10/11 SDK 10.0.x
-        "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe",
-        "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22000.0\x64\signtool.exe",
-        "C:\Program Files (x86)\Windows Kits\10\bin\10.0.19041.0\x64\signtool.exe",
-        "C:\Program Files (x86)\Windows Kits\10\bin\10.0.18362.0\x64\signtool.exe"
-    )
-    # ค้นหาจาก wildcard ถ้ายังหาไม่เจอ
-    foreach ($path in $candidates) {
-        if (Test-Path $path) { return $path }
+    # 1. ตรวจใน PATH ก่อนเสมอ — GitHub Actions มี signtool ใน PATH อยู่แล้ว
+    $inPath = Get-Command "signtool.exe" -ErrorAction SilentlyContinue
+    if ($inPath) {
+        Write-Host "[INFO] signtool found in PATH: $($inPath.Source)"
+        return $inPath.Source
     }
-    $found = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter "signtool.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($found) { return $found.FullName }
-    throw "ไม่พบ signtool.exe กรุณาติดตั้ง Windows SDK"
+
+    # 2. ค้นหาใน Windows Kits — เรียงจากใหม่ไปเก่า เอาตัวใหม่สุด
+    $kitsBin = "C:\Program Files (x86)\Windows Kits\10\bin"
+    if (Test-Path $kitsBin) {
+        $found = Get-ChildItem $kitsBin -Recurse -Filter "signtool.exe" -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -match "x64" } |
+                 Sort-Object FullName -Descending |
+                 Select-Object -First 1
+        if ($found) {
+            Write-Host "[INFO] signtool found in Windows Kits: $($found.FullName)"
+            return $found.FullName
+        }
+    }
+
+    throw "ไม่พบ signtool.exe — กรุณาติดตั้ง Windows SDK หรือ Visual Studio Build Tools"
 }
 
 # ── กำหนด Path ───────────────────────────────────────────────────
@@ -34,11 +41,7 @@ $BundleDir    = Join-Path $PSScriptRoot "..\src-tauri\target\release\bundle"
 $TimestampUrl = "http://timestamp.digicert.com"
 $DigestAlgo   = "SHA256"
 
-# ── รับ PFX และ Password ─────────────────────────────────────────
-# ทำงานได้ทั้ง 2 โหมด:
-#   1. Local: ระบุ path ของ .pfx ผ่าน env CERT_PFX_PATH
-#   2. CI:    รับ path จากไฟล์ชั่วคราวที่ CI decode มาให้
-
+# ── รับ PFX Path ─────────────────────────────────────────────────
 if ($env:CERT_PFX_PATH) {
     $PfxPath = $env:CERT_PFX_PATH
 } else {
@@ -47,23 +50,27 @@ if ($env:CERT_PFX_PATH) {
 
 if (-not (Test-Path $PfxPath)) {
     Write-Error "ERROR: ไม่พบไฟล์ PFX ที่ '$PfxPath'"
-    Write-Host "  กรุณาสร้าง cert ก่อนด้วย: .\scripts\create-cert.ps1"
     exit 1
 }
 
 if (-not $env:CERT_PASSWORD) {
-    Write-Error "ERROR: กรุณาตั้งค่า environment variable CERT_PASSWORD"
+    Write-Error "ERROR: กรุณาตั้งค่า CERT_PASSWORD environment variable"
     exit 1
 }
 
-# ── ค้นหาไฟล์ installer ทั้งหมด (.exe และ .msi) ──────────────────
+# ── ค้นหาไฟล์ installer (.exe และ .msi) ──────────────────────────
 $Installers = @()
 $Installers += Get-ChildItem -Path $BundleDir -Recurse -Include "*.exe" -ErrorAction SilentlyContinue
 $Installers += Get-ChildItem -Path $BundleDir -Recurse -Include "*.msi" -ErrorAction SilentlyContinue
 
+# ตัด .rss/.zip และไฟล์ที่ไม่ใช่ installer จริงออก
+$Installers = $Installers | Where-Object {
+    $_.Name -notmatch "\.(rss|zip|sig)$" -and
+    ($_.Name -match "setup" -or $_.Name -match "installer" -or $_.Extension -eq ".msi")
+}
+
 if ($Installers.Count -eq 0) {
     Write-Error "ERROR: ไม่พบไฟล์ installer ใน $BundleDir"
-    Write-Host "  กรุณา build โปรเจกต์ก่อนด้วย: npm run tauri build"
     exit 1
 }
 
@@ -78,27 +85,21 @@ $FailCount    = 0
 foreach ($Installer in $Installers) {
     Write-Host "[...] กำลังเซ็น: $($Installer.Name)"
 
-    # ไม่ใช้ $result = ... 2>&1 เพราะ signtool.exe ไม่รองรับบน CI
-    # ใช้ Start-Process แทน เพื่อหลีกเลี่ยง StandardOutputEncoding error
-    $proc = Start-Process -FilePath $SignTool `
-        -ArgumentList @(
-            "sign",
-            "/fd", $DigestAlgo,
-            "/f",  $PfxPath,
-            "/p",  $env:CERT_PASSWORD,
-            "/tr", $TimestampUrl,
-            "/td", $DigestAlgo,
-            $Installer.FullName
-        ) `
-        -Wait `
-        -PassThru `
-        -NoNewWindow
+    # ใช้ & โดยตรง — ไม่ capture output ($result = ...) และไม่ใช้ 2>&1
+    # เพราะ signtool.exe ไม่รองรับ StandardOutputEncoding บน CI
+    & $SignTool sign `
+        /fd $DigestAlgo `
+        /f  "$PfxPath" `
+        /p  "$($env:CERT_PASSWORD)" `
+        /tr $TimestampUrl `
+        /td $DigestAlgo `
+        "$($Installer.FullName)"
 
-    if ($proc.ExitCode -eq 0) {
+    if ($LASTEXITCODE -eq 0) {
         Write-Host "[OK] เซ็นสำเร็จ: $($Installer.Name)"
         $SuccessCount++
     } else {
-        Write-Warning "[FAIL] เซ็นไม่สำเร็จ: $($Installer.Name) (ExitCode=$($proc.ExitCode))"
+        Write-Warning "[FAIL] เซ็นไม่สำเร็จ: $($Installer.Name) (ExitCode=$LASTEXITCODE)"
         $FailCount++
     }
 }

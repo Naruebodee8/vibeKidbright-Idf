@@ -51,9 +51,14 @@ jobs:
           $pfxDir = "$env:RUNNER_TEMP\cert"
           New-Item -ItemType Directory -Path $pfxDir -Force | Out-Null
           $pfxPath = "$pfxDir\codesign.pfx"
-          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:CERT_PFX_BASE64))
+          
+          # Clean up base64 string (remove newlines/spaces) before decoding
+          $cleanB64 = $env:CERT_PFX_BASE64 -replace '\s',''
+          $bytes = [Convert]::FromBase64String($cleanB64)
+          [IO.File]::WriteAllBytes($pfxPath, $bytes)
+          
           "CERT_PFX_PATH=$pfxPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "PFX decoded OK: $pfxPath"
+          Write-Host "PFX decoded OK: $pfxPath (Size: $(Get-Item $pfxPath).Length bytes)"
 
       # ── Tauri Build เท่านั้น (ไม่ upload release ในขั้นตอนนี้) ───────────────
       - name: Build Tauri App

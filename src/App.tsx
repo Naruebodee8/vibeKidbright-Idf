@@ -831,6 +831,8 @@ function App() {
       setEspIdfSetupNote("ESP-IDF installed successfully.");
       setSetupProgress(null);
       await checkEnvironment();
+      // ปิด modal อัตโนมัติหลังสำเร็จ 1.5 วิ
+      setTimeout(() => setShowSetupModal(false), 1500);
     } catch (err) {
       const message = `ESP-IDF setup failed: ${err}`;
       setStatus("ESP-IDF setup failed");
@@ -1581,11 +1583,22 @@ function App() {
               )}
             </div>
 
+            {isSettingUpEspIdf && (
+              <div className="mb-3 p-2 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs text-amber-300 flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full border-2 border-amber-400 border-t-transparent animate-spin shrink-0"></div>
+                <span>กำลังติดตั้ง... กรุณารอจนเสร็จสมบูรณ์ก่อนปิดหน้าต่างนี้</span>
+              </div>
+            )}
             <button
               onClick={() => setShowSetupModal(false)}
-              className="w-full py-2 bg-[var(--bg-overlay)] hover:bg-neutral-600 text-sm text-[var(--text-primary)] rounded-lg transition-colors"
+              disabled={isSettingUpEspIdf}
+              className={`w-full py-2 text-sm rounded-lg transition-colors ${
+                isSettingUpEspIdf
+                  ? "bg-[var(--bg-overlay)]/40 text-[var(--text-muted)] cursor-not-allowed opacity-50"
+                  : "bg-[var(--bg-overlay)] hover:bg-neutral-600 text-[var(--text-primary)]"
+              }`}
             >
-              Cancel
+              {isSettingUpEspIdf ? "⏳ กำลังติดตั้ง..." : "Close"}
             </button>
           </div>
         </div>

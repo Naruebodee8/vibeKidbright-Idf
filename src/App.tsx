@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import AiChat from "./AiChat";
-import CodeEditor from "./CodeEditor";
+import CodeEditor, { parseBuildDiagnostics, Diagnostic } from "./CodeEditor";
 
 interface FileEntry {
   name: string;
@@ -11,7 +11,7 @@ interface FileEntry {
   children?: FileEntry[];
 }
 
-// ── File Icon SVGs by type ──────────────────────────────────────────────────
+// ”€”€ File Icon SVGs by type ”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€
 function FileIcon({ name }: { name: string }) {
   const lower = name.toLowerCase();
 
@@ -248,14 +248,20 @@ interface FileTab {
   savedContent: string;
 }
 
-// ── Theme presets ──────────────────────────────────────────────────────────
+interface BuildErrorInfo {
+  summary: string;
+  exitCode?: number;
+  details: string;
+}
+
+// ── Theme presets ──────────────────────────────────────────────
 const THEMES = [
-  { id: "navy",    label: "Navy Dark",      desc: "สีดำ-กรมท่า (ค่าเริ่มต้น)", color: "#1a56c4", gradient: "from-blue-400 to-cyan-400" },
-  { id: "ocean",   label: "Ocean Deep",     desc: "สีน้ำ-ฟ้าเข้ม",             color: "#0e7490", gradient: "from-cyan-400 to-teal-400" },
-  { id: "purple",  label: "Midnight Purple",desc: "สีม่วงมืด",                 color: "#6d28d9", gradient: "from-violet-400 to-purple-400" },
-  { id: "emerald", label: "Emerald Night",  desc: "สีเขียวมรกต",               color: "#065f46", gradient: "from-emerald-400 to-green-400" },
-  { id: "crimson", label: "Crimson",        desc: "สีแดง (ธีมดั้งเดิม)",       color: "#be123c", gradient: "from-rose-400 to-red-400" },
-  { id: "light",   label: "Light (Clean)",  desc: "สว่าง (สบายตา)",            color: "#2563eb", gradient: "from-blue-500 to-sky-400" },
+  { id: "navy",    label: "Navy Dark",      desc: "Dark blue-navy (default)", color: "#1a56c4", gradient: "from-blue-400 to-cyan-400" },
+  { id: "ocean",   label: "Ocean Deep",     desc: "Deep ocean blue",             color: "#0e7490", gradient: "from-cyan-400 to-teal-400" },
+  { id: "purple",  label: "Midnight Purple",desc: "Dark purple hue",                 color: "#6d28d9", gradient: "from-violet-400 to-purple-400" },
+  { id: "emerald", label: "Emerald Night",  desc: "Emerald green",               color: "#065f46", gradient: "from-emerald-400 to-green-400" },
+  { id: "crimson", label: "Crimson",        desc: "Deep crimson red",       color: "#be123c", gradient: "from-rose-400 to-red-400" },
+  { id: "light",   label: "Light (Clean)",  desc: "Light & comfortable",            color: "#2563eb", gradient: "from-blue-500 to-sky-400" },
 ];
 
 function App() {
@@ -264,9 +270,14 @@ function App() {
   const [espIdfSetupNote, setEspIdfSetupNote] = useState("");
   const [logs, setLogs] = useState<string[]>([]);
   const [terminalInput, setTerminalInput] = useState("");
+  const [buildError, setBuildError] = useState<BuildErrorInfo | null>(null);
+  const [copiedBuildError, setCopiedBuildError] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([]);
+  const [externalAiPrompt, setExternalAiPrompt] = useState<string | null>(null);
   const [openFiles, setOpenFiles] = useState<FileTab[]>([]);
   const [activeFilePath, setActiveFilePath] = useState<string>("");
   const [showAiPanel, setShowAiPanel] = useState(true);
+  const [showBottomPanel, setShowBottomPanel] = useState(true);
   const [projectDir, setProjectDir] = useState(".");
   const [isBuilding, setIsBuilding] = useState(false);
   const [serialPorts, setSerialPorts] = useState<string[]>([]);
@@ -328,7 +339,7 @@ function App() {
         idfPath: customIdfPath,
         toolsPath: customToolsPath,
       });
-      addLog(`✅ ${result}`);
+      addLog(`… ${result}`);
       setShowSetupModal(false);
       await checkEnvironment();
     } catch (err) {
@@ -356,7 +367,7 @@ function App() {
     if (path) setCustomToolsPath(path as string);
   };
 
-  // --- 🛠 COMMAND WRAPPER HACK FOR WINDOWS 🛠 ---
+  // ---   COMMAND WRAPPER HACK FOR WINDOWS   ---
   const runIdfWrappedCommand = async (baseCmd: string, args: string[], cwd: string | null) => {
     let idfPathToUse = customIdfPath;
     
@@ -371,7 +382,7 @@ function App() {
       const cleanPath = idfPathToUse.replace(/\//g, '\\');
       const exportScript = `${cleanPath}\\export.bat`;
       
-      // 🛠 แก้ไข: เอาเครื่องหมาย "" รอบๆ ${exportScript} ออก เพื่อไม่ให้ CMD งงกับตัวอักษร \"
+      //   แก้ไข: €อา€ครื่องหมาย "" รอบๆ ${exportScript} ออก €พื่อไม่ให้ CMD งงกับ•ัวอักษร \"
       const fullCmd = `call ${exportScript} && ${baseCmd} ${args.join(" ")}`;
       
       addLog(`[IDF Wrapper] Injecting environment from: ${exportScript}`);
@@ -393,6 +404,7 @@ function App() {
     const unlistenTerminal = listen("terminal-output", (event) => {
       setLogs((prev) => [...prev, event.payload as string]);
     });
+
 
     const unlistenProgress = listen("toolchain-progress", (event) => {
       setSetupProgress(event.payload as {stage: string, percent: number, message: string});
@@ -444,13 +456,40 @@ function App() {
       }
     });
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
-        e.preventDefault();
-        saveAllFiles();
+    const unlistenBuildError = listen("build-error", (event: any) => {
+      try {
+        const data = typeof event.payload === 'string' ? JSON.parse(event.payload) : event.payload;
+        setStatus("Build Failed");
+        const rawErrors: string[] = Array.isArray(data.errors) && data.errors.length > 0
+          ? data.errors
+          : (data.raw ? String(data.raw).split("\n") : []);
+        const details = rawErrors.join("\n") || "Build failed";
+        setBuildError({
+          summary: "Compilation Error",
+          exitCode: data.exit_code || 1,
+          details
+        });
+        // Parse into Monaco markers (red/yellow squiggles)
+        const parsed = parseBuildDiagnostics(rawErrors);
+        if (parsed.length > 0) setDiagnostics(parsed);
+        setShowBottomPanel(true);
+      } catch (e) {
+        console.error("Failed to parse build-error:", e);
       }
-    };
-    window.addEventListener("keydown", handleKeyDown);
+    });
+
+    const unlistenCommandFinished = listen("command-finished", (event: any) => {
+      try {
+        const data = typeof event.payload === 'string' ? JSON.parse(event.payload) : event.payload;
+        if (!data.success) {
+          setStatus("Build Failed");
+        } else {
+          // Clear markers on successful build
+          setDiagnostics([]);
+          setBuildError(null);
+        }
+      } catch (e) {}
+    });
 
     return () => {
       unlistenTerminal.then((f) => f());
@@ -458,7 +497,8 @@ function App() {
       unlistenFile.then((f) => f());
       unlistenForceDir.then((f) => f());
       unlistenDiffPending.then((f) => f());
-      window.removeEventListener("keydown", handleKeyDown);
+      unlistenBuildError.then((f) => f());
+      unlistenCommandFinished.then((f) => f());
       invoke("stop_serial_monitor").catch(() => null);
     };
   }, [activeFilePath, openFiles]);
@@ -488,10 +528,11 @@ function App() {
   }, [logs]);
 
   const saveAllFiles = useCallback(async () => {
-    if (openFiles.length === 0) return;
+    const dirtyFiles = openFiles.filter(f => f.content !== f.savedContent);
+    if (dirtyFiles.length === 0) return;
     try {
       let savedCount = 0;
-      for (const file of openFiles) {
+      for (const file of dirtyFiles) {
         await invoke("write_project_file", {
           path: file.path,
           content: file.content
@@ -499,7 +540,7 @@ function App() {
         savedCount++;
       }
       setOpenFiles(prev => prev.map(f => ({ ...f, savedContent: f.content })));
-      addLog(`✨ Saved all ${savedCount} open files`);
+      addLog(`✨ Saved ${savedCount} modified file${savedCount > 1 ? 's' : ''}`);
     } catch (err) {
       addLog(`❌ Failed to save files: ${err}`);
     }
@@ -542,7 +583,7 @@ function App() {
   const handleDeleteItem = async (path: string, isDir: boolean) => {
     const name = path.split(/[\/\\]/).pop() || "";
     if (name === "CMakeLists.txt" || name === "sdkconfig") {
-      const confirmCritical = window.confirm(`⚠️ WARNING: '${name}' is a critical ESP-IDF file.\n\nDeleting it may break your project.\n\nAre you absolutely sure you want to delete '${name}'?`);
+      const confirmCritical = window.confirm(` ️ WARNING: '${name}' is a critical ESP-IDF file.\n\nDeleting it may break your project.\n\nAre you absolutely sure you want to delete '${name}'?`);
       if (!confirmCritical) return;
     } else {
       const confirmDelete = window.confirm(`Are you sure you want to delete '${name}'?`);
@@ -831,7 +872,7 @@ function App() {
       setEspIdfSetupNote("ESP-IDF installed successfully.");
       setSetupProgress(null);
       await checkEnvironment();
-      // ปิด modal อัตโนมัติหลังสำเร็จ 1.5 วิ
+      // ปิ” modal อั•โนมั•ิหลังสำ€ร็จ 1.5 วิ
       setTimeout(() => setShowSetupModal(false), 1500);
     } catch (err) {
       const message = `ESP-IDF setup failed: ${err}`;
@@ -931,7 +972,7 @@ function App() {
     setTerminalInput("");
 
     try {
-      // 🛠 ใช้ Wrapper ถ้าเป็นคำสั่งของ IDF
+      //   ใช้ Wrapper –้า€ป็นคำสั่งของ IDF
       if (["idf.py", "ninja", "cmake", "esptool.py"].includes(cmd)) {
         await runIdfWrappedCommand(cmd, args, projectDir === "." ? null : projectDir);
       } else {
@@ -941,11 +982,28 @@ function App() {
           cwd: projectDir === "." ? null : projectDir
         });
       }
+      setStatus("Ready");
     } catch (err) {
-      addLog(`Error: ${err}`);
+      const errStr = String(err);
+      addLog(`❌ Command failed: ${errStr}`);
+      setStatus("Command Failed");
+      if (["idf.py", "ninja", "cmake"].includes(cmd)) {
+        setBuildError((prev) => prev || {
+          summary: `${cmd} Failed`,
+          exitCode: 1,
+          details: errStr
+        });
+        setShowBottomPanel(true);
+      }
     }
   };
 
+  const handleFixWithAi = () => {
+    if (!buildError) return;
+    setShowAiPanel(true);
+    const prompt = `Build failed with the following errors:\n\n\`\`\`\n${buildError.details}\n\`\`\`\n\nPlease analyze the errors and fix the code.`;
+    setExternalAiPrompt(prompt);
+  };
 
   const handleNewProject = () => {
     setShowNewProjectModal(true);
@@ -986,8 +1044,100 @@ function App() {
       alert(`Failed to create project: ${err}`);
     }
   };
+  // ”€”€ Stable GCC/Clang diagnostic parser (separate from the openFiles effect) ”€”€
+  // This effect runs ONCE and never gets recreated, so it never drops lines.
+  useEffect(() => {
+    // Strip ANSI escape codes (Rust adds \x1b[31m...\x1b[0m around stderr lines)
+    const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[mGKHF]/g, "").replace(/\x1b\[\??\d*[hl]/g, "");
+    // GCC diagnostic line: /abs/path/file.c:line:col: error|warning|note: message
+    const gccDiagRe = /^(.+\.(?:c|cpp|cc|cxx|h|hpp)):(\d+)(?::(\d+))?:\s*(error|warning|note):\s*(.+)$/;
+    // GCC caret line: "   27 | code..." followed by "      |    ^~~~"
+    const caretRe   = /^\s*\|\s*(\^~*)/;
+
+    // Accumulate GCC lines across all renders
+    const acc: Array<{ line: string; caretWidth?: number }> = [];
+    let lastDiagIdx = -1;   // index in acc of last matched diagnostic line
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const flush = () => {
+      // Parse with width hints
+      const result: import("./CodeEditor").Diagnostic[] = [];
+      const diagRe2 = /^(.+\.(?:c|cpp|cc|cxx|h|hpp)):(\d+)(?::(\d+))?:\s*(error|warning|note):\s*(.+)$/;
+      for (let i = 0; i < acc.length; i++) {
+        const m = acc[i].line.match(diagRe2);
+        if (m) {
+          const sev = m[4] === "warning" ? "warning" : m[4] === "note" ? "info" : "error";
+          // Look ahead for caret width in next 3 lines
+          let endColOffset = 1;
+          for (let j = i + 1; j <= i + 3 && j < acc.length; j++) {
+            if (acc[j].caretWidth !== undefined) {
+              endColOffset = acc[j].caretWidth!;
+              break;
+            }
+          }
+          const startCol = m[3] ? parseInt(m[3], 10) : 1;
+          result.push({
+            filePath:  m[1].replace(/\\/g, "/"),
+            line:      parseInt(m[2], 10),
+            column:    startCol,
+            endColumn: startCol + endColOffset,
+            severity:  sev as "error" | "warning" | "info",
+            message:   m[5],
+            messageTh: translateErrorLocal(m[5]),
+          });
+        }
+      }
+      if (result.length > 0) setDiagnostics(result as any);
+    };
+
+    const translateErrorLocal = (msg: string): string => {
+      const l = msg.toLowerCase();
+      if (l.includes("expected ';'"))         return "Missing semicolon ';'";
+      if (l.includes("expected '}'"))         return "Missing closing '}'";
+      if (l.includes("expected '{'"))         return "Missing opening '{'";
+      if (l.includes("expected ')'"))         return "Missing closing ')'";
+      if (l.includes("expected '('"))         return "Missing opening '('";
+      if (l.includes("undeclared"))            return "Undeclared variable or function";
+      if (l.includes("undefined reference"))  return "Undefined reference";
+      if (l.includes("unused variable"))      return "Unused variable";
+      if (l.includes("implicit declaration")) return "Missing #include for this function";
+      if (l.includes("incompatible type"))    return "Type mismatch";
+      if (l.includes("no such file"))         return "Header file not found";
+      if (l.includes("too many arguments"))   return "Too many arguments";
+      if (l.includes("too few arguments"))    return "Too few arguments";
+      if (l.includes("redefinition"))         return "Redefinition error";
+      if (l.includes("control reaches end"))  return "Missing return statement";
+      if (l.includes("format"))               return "Format string mismatch";
+      return msg;
+    };
+
+    const unlisten = listen("terminal-output", (event) => {
+      const clean = stripAnsi(String(event.payload)).trim();
+      if (!clean) return;
+
+      const isDiag  = gccDiagRe.test(clean);
+      const caretM  = clean.match(caretRe);
+
+      if (isDiag) {
+        acc.push({ line: clean });
+        lastDiagIdx = acc.length - 1;
+        if (flushTimer) clearTimeout(flushTimer);
+        flushTimer = setTimeout(flush, 500);
+      } else if (caretM && lastDiagIdx >= 0) {
+        // Attach caret width to a virtual entry so flush() can look ahead
+        const w = caretM[1].length; // number of chars in ^~~~
+        acc.push({ line: clean, caretWidth: w });
+      }
+    });
+
+    return () => {
+      unlisten.then(f => f());
+      if (flushTimer) clearTimeout(flushTimer);
+    };
+  }, []); // stable - runs exactly once
 
   const handleBuildFlash = async () => {
+
     if (isBuilding) return;
     
     if (projectDir === ".") {
@@ -997,13 +1147,36 @@ function App() {
     }
 
     setIsBuilding(true);
+    setBuildError(null);
+    setDiagnostics([]);   // clear previous Monaco markers
+    setStatus("Building...");
     addLog("--- Starting Build & Flash ---");
 
     try {
-      // 🛠 ใช้ Wrapper เพื่อให้มันโหลด export.bat ก่อนสั่ง idf.py เสมอ
+      //   ใช้ Wrapper €พื่อให้มันโหล” export.bat ก่อนสั่ง idf.py €สมอ
       await runIdfWrappedCommand("idf.py", ["build", "flash"], projectDir);
+      setStatus("Ready: Build Succeeded");
+      addLog("… Build & Flash completed successfully!");
+      setTimeout(() => setStatus("Ready"), 5000);
     } catch (err) {
-      addLog(`Build failed: ${err}`);
+      const errStr = String(err);
+      setStatus("Build Failed");
+      addLog(`❌ Build failed: ${errStr}`);
+      
+      setBuildError((prev) => {
+        if (prev) return prev;
+        const recentErrors = logs
+          .slice(-60)
+          .filter(l => /error:|fatal error:|undefined reference|CMake Error|ninja: error:/i.test(l))
+          .map(l => l.replace(/(\x1b|\u001b)\[[0-9;]*m/g, '').trim());
+
+        return {
+          summary: "Build Failed",
+          exitCode: 1,
+          details: recentErrors.length > 0 ? recentErrors.join("\n") : errStr
+        };
+      });
+      setShowBottomPanel(true);
     } finally {
       setIsBuilding(false);
     }
@@ -1038,6 +1211,47 @@ function App() {
       addLog(`❌ Failed to read file: ${err}`);
     }
   };
+
+  // ”€”€ Global Keyboard Shortcuts ”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€”€
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      const isCtrl = e.metaKey || e.ctrlKey;
+      
+      // Ctrl+S: Save dirty files
+      if (isCtrl && (e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        saveAllFiles();
+      }
+      // Ctrl+B: Build & Flash
+      else if (isCtrl && !e.shiftKey && (e.key === "b" || e.key === "B")) {
+        e.preventDefault();
+        handleBuildFlash();
+      }
+      // Ctrl+Shift+P or Ctrl+Shift+B: Build & Flash
+      else if (isCtrl && e.shiftKey && (e.key === "P" || e.key === "p" || e.key === "B" || e.key === "b")) {
+        e.preventDefault();
+        handleBuildFlash();
+      }
+      // Ctrl+/: Toggle AI Assistant Panel
+      else if (isCtrl && (e.key === "/" || e.key === "?")) {
+        e.preventDefault();
+        setShowAiPanel(prev => !prev);
+      }
+      // Ctrl+`: Toggle Bottom Terminal / Console Panel
+      else if (isCtrl && (e.key === "`" || e.key === "~")) {
+        e.preventDefault();
+        setShowBottomPanel(prev => !prev);
+      }
+      // F5: Toggle Serial Monitor
+      else if (e.key === "F5") {
+        e.preventDefault();
+        toggleSerialMonitor();
+      }
+    };
+
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, [saveAllFiles, handleBuildFlash, toggleSerialMonitor]);
 
   return (
     <div className="flex h-screen w-screen bg-[#020617] text-slate-200 overflow-hidden font-sans selection:bg-blue-500/30">
@@ -1131,7 +1345,7 @@ function App() {
             }`}
           >
             <span className={`w-4 h-4 flex items-center justify-center rounded text-[10px] font-bold ${isSettingUpEspIdf ? "bg-amber-400/30 text-amber-200" : "bg-[var(--bg-overlay)] text-[var(--text-primary)]"}`}>
-              {isSettingUpEspIdf ? "…" : "⚙"}
+              {isSettingUpEspIdf ? "€" : "⚙"}
             </span>
             {isSettingUpEspIdf ? "Installing ESP-IDF..." : "Setup / Repair ESP-IDF"}
           </button>
@@ -1158,8 +1372,22 @@ function App() {
 
         <div className="p-4 border-t border-[var(--border-subtle)] bg-[var(--bg-surface)]/50">
           <div className="flex items-center gap-2 text-xs mb-3">
-            <div className={`w-2 h-2 rounded-full ${status.includes("Ready") || status.includes("OK") ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]" : "bg-amber-500"}`}></div>
-            <span className="text-[var(--text-secondary)] truncate font-medium">{status.split(":")[0]}</span>
+            <div className={`w-2.5 h-2.5 rounded-full transition-all duration-300 shrink-0 ${
+              status.includes("Failed") || status.includes("Error")
+                ? "bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.9)] animate-pulse"
+                : status.includes("Building") || status.includes("Checking") || status.includes("Installing")
+                ? "bg-amber-400 animate-pulse shadow-[0_0_8px_rgba(251,191,36,0.6)]"
+                : status.includes("Ready") || status.includes("OK")
+                ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]"
+                : "bg-amber-500"
+            }`}></div>
+            <span className={`truncate font-medium transition-colors ${
+              status.includes("Failed") || status.includes("Error")
+                ? "text-red-400 font-bold"
+                : status.includes("Building")
+                ? "text-amber-300 font-semibold"
+                : "text-[var(--text-secondary)]"
+            }`}>{status.split(":")[0]}</span>
           </div>
           {espIdfSetupNote && (
             <div className="text-[10px] leading-relaxed text-[var(--text-muted)] mb-3 rounded border border-[var(--border-subtle)] bg-[var(--bg-base)]/70 p-2">
@@ -1233,7 +1461,7 @@ function App() {
                       onMouseEnter={(e) => e.currentTarget.style.color = "var(--accent-400)"}
                       onMouseLeave={(e) => e.currentTarget.style.color = "inherit"}
                     >
-                      {isFileDirty(file) ? "●" : "×"}
+                      {isFileDirty(file) ? "—" : "—"}
                     </button>
                   </div>
                 ))}
@@ -1277,6 +1505,9 @@ function App() {
                 filePath={activeFile.path}
                 onSave={saveAllFiles}
                 activeTheme={activeTheme}
+                diagnostics={diagnostics}
+                showProblems={true}
+                onSendToAi={(text) => { setShowAiPanel(true); setExternalAiPrompt(text); }}
               />
             ) : (
               <div className="flex-1 flex items-center justify-center bg-[var(--bg-base)]">
@@ -1285,9 +1516,7 @@ function App() {
                   <p className="text-sm text-[var(--text-muted)] font-medium">
                     {projectDir === "." ? "Open or create a project to start coding" : "Select a file from the sidebar"}
                   </p>
-                  <p className="text-xs text-[var(--text-muted)]">
-                    Ctrl+S to save • Syntax highlighting for C, Python, JSON & more
-                  </p>
+                  <p className="text-xs text-[var(--text-muted)] mb-4">Select a theme. Changes apply immediately.</p>
                 </div>
               </div>
             )}
@@ -1295,95 +1524,162 @@ function App() {
         </div>
 
         {/* Console & Terminal */}
-        <div className="h-80 border-t border-[var(--border-subtle)] bg-[var(--bg-base)] flex flex-col shadow-2xl">
-          <div className="h-9 border-b border-[var(--border-subtle)] flex items-center justify-between px-4 bg-[var(--bg-base)]/40">
-            <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-[0.2em]">Interactive Terminal</span>
-            <div className="flex items-center gap-2">
-              <div className="flex items-center">
-                <select
-                  value={selectedSerialPort}
-                  onChange={(e) => setSelectedSerialPort(e.target.value)}
+        {showBottomPanel && (
+          <div className="h-80 border-t border-[var(--border-subtle)] bg-[var(--bg-base)] flex flex-col shadow-2xl">
+            <div className="h-9 border-b border-[var(--border-subtle)] flex items-center justify-between px-4 bg-[var(--bg-base)]/40 shrink-0">
+              <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-[0.2em]">Interactive Terminal</span>
+              <div className="flex items-center gap-2">
+                <div className="flex items-center">
+                  <select
+                    value={selectedSerialPort}
+                    onChange={(e) => setSelectedSerialPort(e.target.value)}
+                    onClick={loadSerialPorts}
+                    className="bg-[var(--bg-elevated)] border border-[var(--border-normal)] rounded px-2 py-1 text-[10px] text-[var(--text-primary)] w-[100px] focus:outline-none cursor-pointer"
+                    style={{ outlineColor: "var(--accent-500)" }}
+                    title="Auto-refreshing Serial Ports"
+                  >
+                    {serialPorts.length === 0 ? (
+                      <option value="" disabled>No Ports</option>
+                    ) : (
+                      <>
+                        {!selectedSerialPort && <option value="" disabled>Select Port</option>}
+                        {serialPorts.map((port) => (
+                          <option key={port} value={port}>{port}</option>
+                        ))}
+                      </>
+                    )}
+                  </select>
+                </div>
+                <input
+                  type="text"
+                  value={serialBaud}
+                  onChange={(e) => setSerialBaud(e.target.value)}
+                  className="w-20 bg-[var(--bg-elevated)] border border-[var(--border-normal)] rounded px-2 py-1 text-[10px] text-[var(--text-primary)]"
+                />
+                <button
                   onClick={loadSerialPorts}
-                  className="bg-[var(--bg-elevated)] border border-[var(--border-normal)] rounded px-2 py-1 text-[10px] text-[var(--text-primary)] w-[100px] focus:outline-none cursor-pointer"
-                  style={{ outlineColor: "var(--accent-500)" }}
-                  title="Auto-refreshing Serial Ports"
+                  className="text-[10px] px-2 py-1 rounded bg-[var(--bg-elevated)] text-[var(--text-primary)] hover:bg-[var(--bg-overlay)] cursor-pointer"
                 >
-                  {serialPorts.length === 0 ? (
-                    <option value="" disabled>No Ports</option>
-                  ) : (
-                    <>
-                      {!selectedSerialPort && <option value="" disabled>Select Port</option>}
-                      {serialPorts.map((port) => (
-                        <option key={port} value={port}>{port}</option>
-                      ))}
-                    </>
-                  )}
-                </select>
+                  Refresh Ports
+                </button>
+                <button
+                  onClick={toggleSerialMonitor}
+                  className={`text-[10px] px-2 py-1 rounded font-bold transition-all cursor-pointer ${
+                    isSerialConnected
+                      ? "bg-red-900/70 text-red-200 hover:bg-red-800/80 border border-red-700/50"
+                      : "bg-emerald-900/70 text-emerald-200 hover:bg-emerald-800/80 border border-emerald-700/50"
+                  }`}
+                >
+                  {isSerialConnected ? "” Disconnect" : "” Connect"}
+                </button>
+                <button
+                  onClick={() => setLogs([])}
+                  className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors uppercase font-bold cursor-pointer"
+                >
+                  Clear Logs
+                </button>
               </div>
-              <input
-                type="text"
-                value={serialBaud}
-                onChange={(e) => setSerialBaud(e.target.value)}
-                className="w-20 bg-[var(--bg-elevated)] border border-[var(--border-normal)] rounded px-2 py-1 text-[10px] text-[var(--text-primary)]"
-              />
+            </div>
+
+            {/* ”€”€ Build Error Banner (interactive with AI Fix) ”€”€ */}
+            {buildError && (
+              <div className="border-b border-red-500/30 bg-gradient-to-r from-red-950/95 via-[#1f1013] to-red-950/95 p-3 shadow-lg flex flex-col gap-2 shrink-0">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-red-400 text-sm">❌</span>
+                    <span className="text-xs font-bold text-red-300 tracking-wide">
+                      {buildError.summary || "Build Failed"}
+                    </span>
+                    <span className="text-[10px] bg-red-500/20 text-red-300 px-2 py-0.5 rounded-full border border-red-500/30 font-mono">
+                      exit code {buildError.exitCode || 1}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleFixWithAi}
+                      className="px-3 py-1 bg-violet-600 hover:bg-violet-500 active:scale-95 text-white text-xs font-bold rounded-md shadow-md shadow-violet-500/30 flex items-center gap-1.5 transition-all cursor-pointer"
+                    >
+                      <span>–</span>
+                      <span>ให้ AI ช่วยแก้ไข (Fix with AI)</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(buildError.details);
+                        setCopiedBuildError(true);
+                        setTimeout(() => setCopiedBuildError(false), 2000);
+                      }}
+                      className="px-2.5 py-1 bg-[var(--bg-elevated)] hover:bg-[var(--bg-overlay)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs rounded-md border border-[var(--border-normal)] transition-colors flex items-center gap-1 cursor-pointer"
+                    >
+                      {copiedBuildError ? "“ Copied!" : "“ Copy Error"}
+                    </button>
+                    <button
+                      onClick={() => setBuildError(null)}
+                      className="p-1 text-[var(--text-muted)] hover:text-white transition-colors rounded cursor-pointer"
+                      title="Dismiss"
+                    >
+                      •
+                    </button>
+                  </div>
+                </div>
+                <div className="max-h-24 overflow-y-auto bg-black/60 rounded-lg p-2 font-mono text-[11px] text-red-200 border border-red-500/20 whitespace-pre-wrap break-all leading-relaxed">
+                  {buildError.details}
+                </div>
+              </div>
+            )}
+
+            <div
+              ref={scrollRef}
+              className="flex-1 overflow-y-auto p-4 font-mono text-xs space-y-1 selection:bg-blue-500/20"
+            >
+              {logs.length === 0 ? (
+                <div className="text-[var(--text-muted)] italic opacity-50">vibeKidbright Terminal Ready. Type 'idf.py --version' to test.</div>
+              ) : (
+                logs.map((log, i) => {
+                  const isRed = log.includes("\x1b[31m") || log.includes("\u001b[31m") || /error:|fatal error:|FAILED:|ninja failed|❌/i.test(log);
+                  const isGreen = log.includes("\x1b[32m") || log.includes("\u001b[32m") || /successfully|Success:|Ready|✨|…/i.test(log);
+                  const isYellow = log.includes("\x1b[33m") || log.includes("\u001b[33m") || /warning:|Auto-Fix| ️/i.test(log);
+                  const cleanLog = log.replace(/(\x1b|\u001b)\[[0-9;]*m/g, "");
+
+                  return (
+                    <div
+                      key={i}
+                      className={`flex gap-2 transition-colors ${
+                        isRed
+                          ? "text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded border-l-2 border-red-500 font-semibold"
+                          : isGreen
+                          ? "text-emerald-400 font-medium"
+                          : isYellow
+                          ? "text-amber-400"
+                          : "text-[var(--text-secondary)]/90 hover:text-[var(--text-primary)]"
+                      }`}
+                    >
+                      <span className="whitespace-pre-wrap break-all">{cleanLog}</span>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+            {/* Terminal Input */}
+            <div className="p-2 bg-[var(--bg-surface)]/40 border-t border-[var(--border-subtle)] flex items-center gap-2 group">
+              <span className="font-bold text-sm ml-2" style={{ color: "var(--accent-500)" }}>$</span>
+              <form onSubmit={handleTerminalSubmit} className="flex-1">
+                <input
+                  type="text"
+                  value={terminalInput}
+                  onChange={(e) => setTerminalInput(e.target.value)}
+                  placeholder={isSerialConnected ? "Type message and press Enter to send to board..." : "Type command (e.g. idf.py) and press Enter..."}
+                  className="w-full bg-transparent border-none focus:outline-none font-mono text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
+                />
+              </form>
               <button
-                onClick={loadSerialPorts}
-                className="text-[10px] px-2 py-1 rounded bg-[var(--bg-elevated)] text-[var(--text-primary)] hover:bg-[var(--bg-overlay)]"
+                onClick={sendSerialText}
+                className="text-[10px] px-2 py-1 rounded bg-[var(--bg-elevated)] hover:bg-[var(--bg-overlay)] text-[var(--text-primary)]"
               >
-                Refresh Ports
-              </button>
-              <button
-                onClick={toggleSerialMonitor}
-                className={`text-[10px] px-2 py-1 rounded font-bold transition-all ${
-                  isSerialConnected
-                    ? "bg-red-900/70 text-red-200 hover:bg-red-800/80 border border-red-700/50"
-                    : "bg-emerald-900/70 text-emerald-200 hover:bg-emerald-800/80 border border-emerald-700/50"
-                }`}
-              >
-                {isSerialConnected ? "⛔ Disconnect" : "🔌 Connect"}
-              </button>
-              <button
-                onClick={() => setLogs([])}
-                className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors uppercase font-bold"
-              >
-                Clear Logs
+                Send Serial
               </button>
             </div>
           </div>
-          <div
-            ref={scrollRef}
-            className="flex-1 overflow-y-auto p-4 font-mono text-xs space-y-1 selection:bg-blue-500/20"
-          >
-            {logs.length === 0 ? (
-              <div className="text-[var(--text-muted)] italic opacity-50">vibeKidbright Terminal Ready. Type 'idf.py --version' to test.</div>
-            ) : (
-              logs.map((log, i) => (
-                <div key={i} className="flex gap-2 text-[var(--text-secondary)]/90 hover:text-[var(--text-primary)] transition-colors">
-                  <span className="whitespace-pre-wrap break-all">{log}</span>
-                </div>
-              ))
-            )}
-          </div>
-          {/* Terminal Input */}
-          <div className="p-2 bg-[var(--bg-surface)]/40 border-t border-[var(--border-subtle)] flex items-center gap-2 group">
-            <span className="font-bold text-sm ml-2" style={{ color: "var(--accent-500)" }}>$</span>
-            <form onSubmit={handleTerminalSubmit} className="flex-1">
-              <input
-                type="text"
-                value={terminalInput}
-                onChange={(e) => setTerminalInput(e.target.value)}
-                placeholder={isSerialConnected ? "Type message and press Enter to send to board..." : "Type command (e.g. idf.py) and press Enter..."}
-                className="w-full bg-transparent border-none focus:outline-none font-mono text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
-              />
-            </form>
-            <button
-              onClick={sendSerialText}
-              className="text-[10px] px-2 py-1 rounded bg-[var(--bg-elevated)] hover:bg-[var(--bg-overlay)] text-[var(--text-primary)]"
-            >
-              Send Serial
-            </button>
-          </div>
-        </div>
+        )}
       </div>
 
       {/* AI Chat Panel */}
@@ -1394,6 +1690,8 @@ function App() {
             onInjectCode={(newCode) => updateActiveFileContent(newCode)}
             onApplyToFile={handleApplyToFile}
             onOpenFile={handleOpenFile}
+            externalPrompt={externalAiPrompt}
+            onClearExternalPrompt={() => setExternalAiPrompt(null)}
           />
         </div>
       )}
@@ -1403,7 +1701,7 @@ function App() {
         <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="bg-[var(--bg-surface)] border border-[var(--border-normal)] rounded-xl p-6 w-96 shadow-2xl">
             <h3 className="text-lg font-bold text-[var(--text-primary)] mb-4 flex items-center gap-2">
-              <span style={{ color: "var(--accent-400)" }}>📁</span> Create New Project
+              <span style={{ color: "var(--accent-400)" }}>“</span> Create New Project
             </h3>
 
             <div className="space-y-4">
@@ -1461,7 +1759,7 @@ function App() {
         </div>
       )}
 
-      {/* ── Setup / Repair ESP-IDF Modal ── */}
+      {/* ”€”€ Setup / Repair ESP-IDF Modal ”€”€ */}
       {showSetupModal && (
         <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="bg-[var(--bg-elevated)] border border-[var(--border-normal)] rounded-xl p-6 w-[480px] shadow-2xl">
@@ -1475,7 +1773,7 @@ function App() {
             {/* Tab: Manual Path */}
             <div className="bg-[var(--bg-base)]/60 border border-[var(--border-normal)] rounded-lg p-4 mb-4">
               <div className="flex items-center gap-2 mb-3">
-                <span className="text-emerald-400 text-sm font-bold">📁 Manual Path</span>
+                <span className="text-emerald-400 text-sm font-bold">“ Manual Path</span>
                 <span className="text-[10px] text-[var(--text-muted)] bg-[var(--bg-overlay)] px-1.5 py-0.5 rounded">Recommended if ESP-IDF already installed</span>
               </div>
 
@@ -1586,7 +1884,7 @@ function App() {
             {isSettingUpEspIdf && (
               <div className="mb-3 p-2 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs text-amber-300 flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full border-2 border-amber-400 border-t-transparent animate-spin shrink-0"></div>
-                <span>กำลังติดตั้ง... กรุณารอจนเสร็จสมบูรณ์ก่อนปิดหน้าต่างนี้</span>
+                <span>กำลัง•ิ”•ั้ง... กรุ“ารอจน€สร็จสมบูร“์ก่อนปิ”หน้า•่างนี้</span>
               </div>
             )}
             <button
@@ -1598,7 +1896,7 @@ function App() {
                   : "bg-[var(--bg-overlay)] hover:bg-neutral-600 text-[var(--text-primary)]"
               }`}
             >
-              {isSettingUpEspIdf ? "⏳ กำลังติดตั้ง..." : "Close"}
+              {isSettingUpEspIdf ? "⏳ กำลัง•ิ”•ั้ง..." : "Close"}
             </button>
           </div>
         </div>
@@ -1614,7 +1912,7 @@ function App() {
             onClick={() => { setInlineAction({ mode: "rename", path: contextMenu.path }); setInlineInputValue(contextMenu.path.split(/[\/\\]/).pop() || ""); setContextMenu(null); }}
             className="w-full text-left px-3 py-1.5 hover:bg-blue-600/20 hover:text-[var(--accent-300)] transition-colors flex items-center gap-2"
           >
-            <span>📝</span> Rename <span className="ml-auto text-[10px] text-[var(--text-muted)] font-sans">เปลี่ยนชื่อ</span>
+            <span>“</span> Rename <span className="ml-auto text-[10px] text-[var(--text-muted)] font-sans">€ปลี่ยนชื่อ</span>
           </button>
           
           {contextMenu.isDir && (
@@ -1623,13 +1921,13 @@ function App() {
                 onClick={() => { setInlineAction({ mode: "createFile", path: contextMenu.path }); setInlineInputValue(""); setContextMenu(null); }}
                 className="w-full text-left px-3 py-1.5 hover:bg-blue-600/20 hover:text-[var(--accent-300)] transition-colors flex items-center gap-2 mt-1"
               >
-                <span>➕</span> New File
+                <span>•</span> New File
               </button>
               <button
                 onClick={() => { setInlineAction({ mode: "createDir", path: contextMenu.path }); setInlineInputValue(""); setContextMenu(null); }}
                 className="w-full text-left px-3 py-1.5 hover:bg-blue-600/20 hover:text-[var(--accent-300)] transition-colors flex items-center gap-2"
               >
-                <span>📁</span> New Folder
+                <span>“</span> New Folder
               </button>
             </>
           )}
@@ -1640,18 +1938,17 @@ function App() {
             onClick={() => { handleDeleteItem(contextMenu.path, contextMenu.isDir); setContextMenu(null); }}
             className="w-full text-left px-3 py-1.5 hover:bg-red-900/30 text-red-400 hover:text-red-300 transition-colors flex items-center gap-2"
           >
-            <span>🗑️</span> Delete <span className="ml-auto text-[10px] text-red-600/80 font-sans">ลบ</span>
+            <span>—‘️</span> Delete <span className="ml-auto text-[10px] text-red-600/80 font-sans">ลบ</span>
           </button>
         </div>
       )}
-      {/* ── Theme Settings Modal ── */}
+      {/* ”€”€ Theme Settings Modal ”€”€ */}
       {showThemeModal && (
         <div className="absolute inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="bg-[var(--bg-elevated)] border border-[var(--border-normal)] rounded-xl p-6 w-[400px] shadow-2xl">
             <div className="flex items-center justify-between mb-5">
               <h3 className="text-base font-bold text-[var(--text-primary)] flex items-center gap-2">
-                <span>🎨</span> ปรับธีมสีแอป
-              </h3>
+                <span>🎨</span> App Color Theme</h3>
               <button
                 onClick={() => setShowThemeModal(false)}
                 className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
@@ -1662,7 +1959,7 @@ function App() {
               </button>
             </div>
 
-            <p className="text-xs text-[var(--text-muted)] mb-4">เลือกธีมสีที่ต้องการ — การเปลี่ยนธีมจะมีผลทันที</p>
+            <p className="text-xs text-[var(--text-muted)] mb-4">Select a theme. Changes apply immediately.</p>
 
             <div className="space-y-2">
               {THEMES.map(theme => (
@@ -1700,32 +1997,32 @@ function App() {
 
             {/* HCI Color Guide */}
             <div className="mt-5 p-3 bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-lg">
-              <p className="text-[10px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-2">คำอธิบายสีปุ่มตามหลัก HCI</p>
+              <p className="text-[10px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-2">HCI Color Guide</p>
               <div className="grid grid-cols-2 gap-1.5">
                 <div className="flex items-center gap-1.5">
                   <div className="w-3 h-3 rounded" style={{ background: "var(--btn-primary-bg)" }} />
-                  <span className="text-[10px] text-[var(--text-secondary)]">สีหลัก — Build, Save, Apply</span>
+                  <span className="text-[10px] text-[var(--text-secondary)]">สีหลัก €” Build, Save, Apply</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <div className="w-3 h-3 rounded" style={{ background: "var(--btn-success-bg)" }} />
-                  <span className="text-[10px] text-[var(--text-secondary)]">เขียว — Connect, Create</span>
+                  <span className="text-[10px] text-[var(--text-secondary)]">€ขียว €” Connect, Create</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <div className="w-3 h-3 rounded" style={{ background: "var(--btn-danger-bg)" }} />
-                  <span className="text-[10px] text-[var(--text-secondary)]">แดง — Delete, Disconnect</span>
+                  <span className="text-[10px] text-[var(--text-secondary)]">แ”ง €” Delete, Disconnect</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <div className="w-3 h-3 rounded" style={{ background: "var(--btn-warning-bg)" }} />
-                  <span className="text-[10px] text-[var(--text-secondary)]">ส้ม — Warning, Flash</span>
+                  <span className="text-[10px] text-[var(--text-secondary)]">ส้ม €” Warning, Flash</span>
                 </div>
               </div>
             </div>
 
             <button
               onClick={() => setShowThemeModal(false)}
-              className="mt-4 w-full justify-center btn-primary"
+              className="w-full mt-4 py-2.5 bg-[var(--accent-primary)] text-white rounded-lg text-sm font-semibold hover:opacity-90 transition-opacity"
             >
-              บันทึกธีม
+              Apply Theme
             </button>
           </div>
         </div>

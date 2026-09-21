@@ -82,10 +82,13 @@ function stripToolCallTags(text: string): string {
     return result.trimEnd();
 }
 
-function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
-    projectDir: string, onInjectCode: (newCode: string) => void;
+function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile, externalPrompt, onClearExternalPrompt }: {
+    projectDir: string;
+    onInjectCode: (newCode: string) => void;
     onApplyToFile: (filePath: string, newCode: string) => void;
     onOpenFile?: (path: string, isKb?: boolean) => void;
+    externalPrompt?: string | null;
+    onClearExternalPrompt?: () => void;
 }
 ) {
     const [messages, setMessages] = useState<Message[]>([]);
@@ -119,10 +122,26 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
     const [googleApiKeyInput, setGoogleApiKeyInput] = useState("");
     const [_googleModel, setGoogleModel] = useState("gemini-2.5-flash");
     const [googleModelInput, setGoogleModelInput] = useState("gemini-2.5-flash");
+    const [aiMode, setAiMode] = useState<"beginner" | "expert">("beginner");
+    const [aiModeInput, setAiModeInput] = useState<"beginner" | "expert">("beginner");
     const [knowledgeFiles, setKnowledgeFiles] = useState<string[]>([]);
     const [isIndexing, setIsIndexing] = useState(false);
+    const [kbIndexStatus, setKbIndexStatus] = useState<{
+        chunks: number; files: number; mode: string; has_index: boolean; last_indexed: number;
+    } | null>(null);
+    const [kbSearchMode, setKbSearchMode] = useState<"vector" | "keyword" | null>(null);
+    // KB auto-indexing progress (from process_new_kb_file pipeline)
+    const [kbProgress, setKbProgress] = useState<{
+        file: string; current: number; total: number; phase: string;
+    } | null>(null);
+    const [kbLastResult, setKbLastResult] = useState<{
+        file: string; indexed: number; failed: number; needs_reindex: boolean;
+    } | null>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
+
+    // Error popup modal
+    const [errorModal, setErrorModal] = useState<{ message: string; copied: boolean } | null>(null);
 
     // Auto-resize prompt textarea
     useEffect(() => {
@@ -131,6 +150,34 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
             inputRef.current.style.height = `${inputRef.current.scrollHeight}px`;
         }
     }, [input]);
+
+    // KB indexing pipeline event listeners
+    useEffect(() => {
+        const unlisteners: (() => void)[] = [];
+        listen<{ file: string; current?: number; total?: number; phase: string }>("kb-indexing-start", e => {
+            setKbProgress({ file: e.payload.file, current: 0, total: e.payload.total ?? 1, phase: "starting" });
+        }).then(u => unlisteners.push(u));
+        listen<{ file: string; current: number; total: number; phase: string }>("kb-indexing-progress", e => {
+            setKbProgress(prev => prev ? {
+                ...prev,
+                current: e.payload.current ?? prev.current,
+                total:   e.payload.total   ?? prev.total,
+                phase:   e.payload.phase,
+            } : null);
+        }).then(u => unlisteners.push(u));
+        listen<{ file: string; indexed: number; failed: number; needs_reindex: boolean }>("kb-updated", e => {
+            setKbProgress(null);
+            setKbLastResult(e.payload);
+            // Auto-dismiss result after 8s
+            setTimeout(() => setKbLastResult(null), 8000);
+            // Refresh kb status
+            if (projectDir) {
+                invoke("get_knowledge_base_files", { projectDir })
+                    .then(f => setKnowledgeFiles(f as string[]));
+            }
+        }).then(u => unlisteners.push(u));
+        return () => unlisteners.forEach(u => u());
+    }, [projectDir]);
 
     useEffect(() => {
         // Load sessions from localStorage
@@ -189,9 +236,20 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
             setGoogleModel(mod);
             setGoogleModelInput(mod);
         });
+        invoke("get_ai_mode").then((m) => {
+            const mode = (m as "beginner" | "expert") || "beginner";
+            setAiMode(mode);
+            setAiModeInput(mode);
+        }).catch(() => {});
         // Listen for streaming events
         const unlistenActiveModel = listen("ai-active-model", (event) => {
             setActiveModelBadge(event.payload as string);
+        });
+
+        const unlistenKbMode = listen("kb-search-mode", (event) => {
+            setKbSearchMode(event.payload as "vector" | "keyword");
+            // Auto-clear badge after 8 s so it doesn't linger
+            setTimeout(() => setKbSearchMode(null), 8000);
         });
 
         const unlistenDelta = listen("ai-chat-delta", (event) => {
@@ -256,6 +314,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
             setIsLoading(false);
             setStreamingText("");
             setActiveTools([]);
+            // Show error in chat AND open error popup modal
             setMessages((prev) => [
                 ...prev,
                 {
@@ -264,10 +323,12 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
                     content: `❌ Error: ${event.payload as string}`,
                 },
             ]);
+            setErrorModal({ message: event.payload as string, copied: false });
         });
 
         return () => {
             unlistenActiveModel.then((f) => f());
+            unlistenKbMode.then((f) => f());
             unlistenDelta.then((f) => f());
             unlistenToolStart.then((f) => f());
             unlistenToolResult.then((f) => f());
@@ -280,6 +341,10 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
         invoke("get_knowledge_base_files", { projectDir }).then((files) => {
             setKnowledgeFiles(files as string[]);
         });
+        // Load vector index status whenever the KB panel would refresh
+        invoke("get_kb_index_status", { projectDir }).then((status) => {
+            setKbIndexStatus(status as typeof kbIndexStatus);
+        }).catch(() => {});
     }, [projectDir, showSettings, isIndexing]);
 
     useEffect(() => {
@@ -440,17 +505,30 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
                 messageId
             });
         } catch (err) {
+            const errStr = String(err);
             setIsLoading(false);
+            setActiveTools([]);
+            setStreamingText("");
             setMessages((prev) => [
                 ...prev.slice(0, -1), // Remove placeholder
                 {
                     id: crypto.randomUUID(),
                     role: "assistant" as const,
-                    content: `❌ Error: ${err}`,
+                    content: `❌ Error: ${errStr}`,
                 },
             ]);
+            // Show error toast for all invoke errors (e.g. API key not configured)
+            setErrorModal({ message: errStr, copied: false });
         }
     };
+
+    // Auto-send or prefill when externalPrompt is triggered (e.g. Fix with AI from build error)
+    useEffect(() => {
+        if (externalPrompt && externalPrompt.trim()) {
+            sendMessage(externalPrompt.trim());
+            onClearExternalPrompt?.();
+        }
+    }, [externalPrompt]);
 
     const saveSettings = async () => {
         try {
@@ -462,6 +540,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
             await invoke("set_openrouter_model", { model: openrouterModelInput });
             await invoke("set_google_api_key", { key: googleApiKeyInput });
             await invoke("set_google_model", { model: googleModelInput });
+            await invoke("set_ai_mode", { mode: aiModeInput });
 
             setApiKey(apiKeyInput);
             setBaseUrl(baseUrlInput);
@@ -470,10 +549,13 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
             setOpenrouterModel(openrouterModelInput);
             setGoogleApiKey(googleApiKeyInput);
             setGoogleModel(googleModelInput);
+            setAiMode(aiModeInput);
 
             setShowSettings(false);
         } catch (err) {
-            console.error("Failed to save AI settings:", err);
+            const errStr = `Failed to save settings: ${err}`;
+            console.error(errStr);
+            setErrorModal({ message: errStr, copied: false });
         }
     };
 
@@ -666,6 +748,81 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
 
     return (
         <div className="flex flex-col h-full bg-[var(--bg-base)]">
+
+            {/* ── Error Toast Banner (top of screen, compact) ────────────────── */}
+            {errorModal && (
+                <div
+                    className="fixed top-4 left-1/2 z-[9999] w-[92%] max-w-md -translate-x-1/2 rounded-xl border border-red-500/40 shadow-2xl overflow-hidden"
+                    style={{ background: "linear-gradient(145deg, #1c0e0e 0%, #1e1e20 100%)" }}
+                >
+                    {/* Top bar */}
+                    <div className="flex items-center gap-2 px-3 py-2 border-b border-red-500/20 bg-red-500/8">
+                        <svg className="w-3.5 h-3.5 text-red-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                        </svg>
+                        <span className="text-red-400 text-[10px] font-bold uppercase tracking-wider">AI Error</span>
+                        <button
+                            onClick={() => setErrorModal(null)}
+                            className="ml-auto text-[var(--text-muted)] hover:text-white transition-colors p-0.5 rounded"
+                            title="Close"
+                        >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+
+                    {/* Error message body */}
+                    <div className="px-3 pt-2.5 pb-1">
+                        <pre
+                            className="text-red-300 text-[10px] font-mono leading-relaxed whitespace-pre-wrap break-words max-h-32 overflow-y-auto"
+                            style={{ background: "rgba(255,60,60,0.06)", borderRadius: "6px", padding: "8px 10px" }}
+                        >
+                            {errorModal.message}
+                        </pre>
+                    </div>
+
+                    {/* Action buttons */}
+                    <div className="flex items-center justify-end gap-1.5 px-3 py-2">
+                        <button
+                            onClick={() => {
+                                navigator.clipboard.writeText(errorModal.message);
+                                setErrorModal((prev) => prev ? { ...prev, copied: true } : null);
+                                setTimeout(() => setErrorModal((prev) => prev ? { ...prev, copied: false } : null), 2000);
+                            }}
+                            className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-semibold transition-all ${
+                                errorModal.copied
+                                    ? "bg-emerald-600 text-white"
+                                    : "bg-[var(--bg-elevated)] hover:bg-[var(--border-subtle)] text-[var(--text-secondary)] border border-[var(--border-subtle)]"
+                            }`}
+                        >
+                            {errorModal.copied ? (
+                                <>
+                                    <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                    </svg>
+                                    Copied!
+                                </>
+                            ) : (
+                                <>
+                                    <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                            d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                    </svg>
+                                    Copy Error
+                                </>
+                            )}
+                        </button>
+                        <button
+                            onClick={() => setErrorModal(null)}
+                            className="px-2.5 py-1 rounded-md text-[10px] font-semibold bg-red-600 hover:bg-red-500 text-white transition-colors"
+                        >
+                            Close
+                        </button>
+                    </div>
+                </div>
+            )}
             {/* Header */}
             <div className="h-10 border-b border-[var(--border-subtle)] flex items-center justify-between px-4 bg-[var(--bg-base)]/80 backdrop-blur-sm shrink-0">
                 <div className="flex items-center gap-2">
@@ -690,6 +847,22 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
                             {provider === "openai" ? "Cloud" : provider === "openrouter" ? "OpenRouter" : provider === "google" ? "Google AI" : "Local"}
                         </span>
                     )}
+                    <button
+                        onClick={() => {
+                            const next = aiMode === "beginner" ? "expert" : "beginner";
+                            setAiMode(next);
+                            setAiModeInput(next);
+                            invoke("set_ai_mode", { mode: next }).catch(console.error);
+                        }}
+                        className={`text-[9px] px-2 py-0.5 rounded font-bold uppercase border transition-all flex items-center gap-1 ${
+                            aiMode === "beginner"
+                                ? "bg-amber-500/10 text-amber-400 border-amber-500/30 hover:bg-amber-500/20"
+                                : "bg-cyan-500/10 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/20"
+                        }`}
+                        title={`คลิกเพื่อสลับโหมด AI (ปัจจุบัน: ${aiMode === "beginner" ? "ผู้เริ่มต้น (อธิบายละเอียด/คอมเมนต์ไทย)" : "มือโปร (โค้ดกระชับ)"})`}
+                    >
+                        {aiMode === "beginner" ? "🐣 Beginner" : "⚡ Expert"}
+                    </button>
                 </div>
                 <div className="flex items-center gap-2">
                     <button
@@ -773,8 +946,49 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
                 <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
                     <div className="bg-[var(--bg-elevated)] border border-[var(--border-normal)] rounded-xl p-6 w-96 shadow-2xl overflow-y-auto max-h-[90vh]">
                         <h3 className="text-sm font-bold text-[var(--text-primary)] mb-4">
-                            AI Provider Settings
+                            AI Settings & Persona
                         </h3>
+
+                        {/* AI Mode Selector */}
+                        <div className="mb-4">
+                            <label className="text-[10px] text-[var(--text-muted)] mb-1.5 block font-bold uppercase tracking-wider">
+                                Experience Mode
+                            </label>
+                            <div className="grid grid-cols-2 gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setAiModeInput("beginner")}
+                                    className={`p-2.5 rounded-lg border text-left transition-all ${
+                                        aiModeInput === "beginner"
+                                            ? "bg-amber-500/10 border-amber-500 text-amber-300 shadow-sm"
+                                            : "bg-[var(--bg-base)] border-[var(--border-subtle)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                                    }`}
+                                >
+                                    <div className="font-bold text-xs flex items-center gap-1">
+                                        <span>🐣</span> Beginner
+                                    </div>
+                                    <div className="text-[9px] opacity-75 mt-0.5 leading-tight">
+                                        อธิบายละเอียด คอมเมนต์ไทย เตือนความปลอดภัย
+                                    </div>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setAiModeInput("expert")}
+                                    className={`p-2.5 rounded-lg border text-left transition-all ${
+                                        aiModeInput === "expert"
+                                            ? "bg-cyan-500/10 border-cyan-500 text-cyan-300 shadow-sm"
+                                            : "bg-[var(--bg-base)] border-[var(--border-subtle)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                                    }`}
+                                >
+                                    <div className="font-bold text-xs flex items-center gap-1">
+                                        <span>⚡</span> Expert
+                                    </div>
+                                    <div className="text-[9px] opacity-75 mt-0.5 leading-tight">
+                                        กระชับ โค้ดตรงประเด็น FreeRTOS/IDF v5 เต็มขั้น
+                                    </div>
+                                </button>
+                            </div>
+                        </div>
 
                         {/* Provider Switcher Tabs */}
                         <div className="flex bg-[var(--bg-base)] p-1 rounded-lg mb-6 border border-[var(--border-normal)] gap-1">
@@ -1074,6 +1288,12 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
                                                 invoke("refresh_knowledge_base", { projectDir })
                                                     .then(() => invoke("get_knowledge_base_files", { projectDir }))
                                                     .then(f => setKnowledgeFiles(f as string[]))
+                                                    .then(() => invoke("get_kb_index_status", { projectDir }))
+                                                    .then(s => setKbIndexStatus(s as typeof kbIndexStatus))
+                                                    .catch(err => {
+                                                        const errStr = `KB Re-index failed: ${err}`;
+                                                        setErrorModal({ message: errStr, copied: false });
+                                                    })
                                                     .finally(() => setIsIndexing(false));
                                             }}
                                             disabled={isIndexing}
@@ -1085,7 +1305,10 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
                                             {isIndexing ? 'Indexing...' : 'Re-index'}
                                         </button>
                                         <button
-                                            onClick={() => invoke("add_knowledge_base_files", { projectDir }).then(() => invoke("get_knowledge_base_files", { projectDir }).then(f => setKnowledgeFiles(f as string[]))).catch(err => console.error("Error adding file:", err))}
+                                            onClick={() => invoke("add_knowledge_base_files", { projectDir }).then(() => invoke("get_knowledge_base_files", { projectDir }).then(f => setKnowledgeFiles(f as string[]))).catch(err => {
+                                                const errStr = `Failed to add KB files: ${err}`;
+                                                setErrorModal({ message: errStr, copied: false });
+                                            })}
                                             className="text-[10px] text-red-400 hover:underline flex items-center gap-1"
                                         >
                                             <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1104,6 +1327,77 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
                                         </button>
                                     </div>
                                 </label>
+
+                                {/* ── KB Indexing Progress Bar ── */}
+                                {kbProgress && (
+                                    <div className="mb-2 p-2.5 rounded-lg bg-blue-500/10 border border-blue-500/20">
+                                        <div className="flex items-center justify-between mb-1.5">
+                                            <span className="text-[9px] text-blue-400 font-bold truncate max-w-[70%]">
+                                                ⚡ Embedding: {kbProgress.file.split('/').pop()}
+                                            </span>
+                                            <span className="text-[9px] text-[var(--text-muted)]">
+                                                {kbProgress.phase === 'saving' ? 'Saving...' : `${kbProgress.current}/${kbProgress.total}`}
+                                            </span>
+                                        </div>
+                                        <div className="w-full bg-[var(--bg-tertiary)] rounded-full h-1.5">
+                                            <div
+                                                className="bg-blue-500 h-1.5 rounded-full transition-all duration-300"
+                                                style={{ width: kbProgress.phase === 'saving' ? '100%' :
+                                                    kbProgress.total > 0 ? `${Math.round(kbProgress.current / kbProgress.total * 100)}%` : '0%' }}
+                                            />
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* ── KB Last Indexing Result ── */}
+                                {kbLastResult && !kbProgress && (
+                                    <div className={`mb-2 p-2 rounded-lg text-[9px] border ${
+                                        kbLastResult.failed > 0
+                                            ? 'bg-amber-500/10 border-amber-500/20 text-amber-400'
+                                            : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                                    }`}>
+                                        {kbLastResult.failed > 0
+                                            ? `⚠️ ${kbLastResult.file.split('/').pop()}: ${kbLastResult.indexed} indexed, ${kbLastResult.failed} failed — Re-index to retry`
+                                            : `✅ ${kbLastResult.file.split('/').pop()}: ${kbLastResult.indexed} chunks indexed`
+                                        }
+                                    </div>
+                                )}
+
+                                {/* ── KB Index Status Card ── */}
+                                {kbIndexStatus && (
+                                    <div className={`flex items-start gap-2.5 p-2.5 rounded-lg border text-[10px] mb-2 ${
+                                        kbIndexStatus.has_index
+                                            ? 'bg-emerald-500/5 border-emerald-500/20'
+                                            : 'bg-amber-500/5 border-amber-500/20'
+                                    }`}>
+                                        <div className={`w-2 h-2 rounded-full mt-0.5 shrink-0 ${
+                                            kbIndexStatus.has_index ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'
+                                        }`} />
+                                        <div className="flex-1 min-w-0">
+                                            <div className={`font-bold mb-0.5 ${
+                                                kbIndexStatus.has_index ? 'text-emerald-400' : 'text-amber-400'
+                                            }`}>
+                                                {kbIndexStatus.has_index ? '🔍 Vector Search Active' : '⚠️ Keyword-only Mode'}
+                                            </div>
+                                            {kbIndexStatus.has_index ? (
+                                                <div className="text-[var(--text-muted)] space-y-0.5">
+                                                    <div>{kbIndexStatus.chunks} chunks · {kbIndexStatus.files} files indexed</div>
+                                                    {kbIndexStatus.last_indexed > 0 && (
+                                                        <div>Last indexed: {new Date(kbIndexStatus.last_indexed * 1000).toLocaleString('th-TH')}</div>
+                                                    )}
+                                                </div>
+                                            ) : (
+                                                <div className="text-[var(--text-muted)] space-y-1">
+                                                    <div>AI uses keyword fallback only — less accurate</div>
+                                                    <div className="text-amber-400/80">กด Re-index (ต้องมี OpenAI key) หรือรัน:</div>
+                                                    <code className="block bg-[var(--bg-base)] px-1.5 py-0.5 rounded font-mono text-[9px] text-violet-300 break-all">
+                                                        python scripts/build_rag_index.py --sentence-transformers
+                                                    </code>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
                                 <div className="space-y-2">
                                     <div className="flex flex-wrap gap-1.5 min-h-[40px] p-2 bg-[var(--bg-surface)]/50 border border-[var(--border-normal)] rounded-lg">
                                         {knowledgeFiles.length === 0 ? (
@@ -1213,6 +1507,15 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, onOpenFile }: {
                                         >
                                             <span className="text-emerald-400">⚡</span>
                                             <span className="font-mono">{tc.name}</span>
+                                            {tc.name === "knowledge_search" && kbSearchMode && (
+                                                <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                                                    kbSearchMode === "vector"
+                                                        ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
+                                                        : "bg-amber-500/15 text-amber-400 border border-amber-500/30"
+                                                }`}>
+                                                    {kbSearchMode === "vector" ? "🔍 vector" : "🔤 keyword"}
+                                                </span>
+                                            )}
                                             <span className="text-[var(--text-muted)]">✓</span>
                                         </div>
                                     ))}

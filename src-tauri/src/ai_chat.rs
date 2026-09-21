@@ -29,6 +29,62 @@ struct VectorIndex {
     last_indexed: std::collections::HashMap<String, u64>,
 }
 
+// ── Knowledge Index v2 Structs ────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+struct ChunkMetadata {
+    chunk_id: String,
+    source_file: String,
+    category: String,
+    chunk_index: u32,
+    total_chunks: u32,
+    char_start: usize,
+    char_end: usize,
+    summary: String,
+    content: String,
+    embedding: Vec<f32>,
+    #[serde(default)]
+    needs_embedding: bool,   // true = embed ล้มเหลว, รอ re-index
+    indexed_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct CategoryChunks {
+    description: String,
+    chunks: Vec<ChunkMetadata>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct FileIndexEntry {
+    category: String,
+    total_chunks: u32,
+    chunk_ids: Vec<String>,
+    file_hash: String,
+    file_size_bytes: u64,
+    last_indexed: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct KnowledgeIndexV2 {
+    version: String,
+    indexed_at: String,
+    embedding_provider: String,
+    embedding_model: String,
+    embedding_dimension: u32,
+    total_chunks: u32,
+    categories: HashMap<String, CategoryChunks>,
+    file_index: HashMap<String, FileIndexEntry>,
+}
+
+// ── Embedding result tracker ──────────────────────────────────────────────────
+
+#[derive(Debug)]
+struct EmbedResult {
+    chunk_index: usize,
+    embedding: Vec<f32>,
+    success: bool,
+}
+
 #[derive(Debug, Clone)]
 struct PendingToolCall {
     id: String,
@@ -60,6 +116,70 @@ fn get_cached_idf_path() -> &'static Mutex<Option<OsString>> {
 static KB_QUERY_CACHE: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
 fn get_kb_query_cache() -> &'static Mutex<HashMap<String, Value>> {
     KB_QUERY_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+// ── 3-Layer System Prompt Cache ───────────────────────────────────────────────
+// Layer 1: BASE_SYSTEM_PROMPT — const, unchanged at runtime
+// Layer 2: KB_LAYER_CACHE     — generated from .knowledge_index.json
+// Usage: get_final_system_prompt() = Layer1 + "\n\n" + Layer2
+
+static KB_LAYER_CACHE: OnceLock<Mutex<String>> = OnceLock::new();
+fn get_kb_layer_cache() -> &'static Mutex<String> {
+    KB_LAYER_CACHE.get_or_init(|| Mutex::new(String::new()))
+}
+
+fn get_final_system_prompt() -> String {
+    let kb_layer = get_kb_layer_cache().lock().unwrap().clone();
+    if kb_layer.is_empty() {
+        BASE_SYSTEM_PROMPT.to_string()
+    } else {
+        format!("{}\n\n{}", BASE_SYSTEM_PROMPT, kb_layer)
+    }
+}
+
+fn rebuild_kb_layer(kb_path: &Path) {
+    let v2 = kb_path.join(".knowledge_index.json");
+    let v1 = kb_path.join(".embeddings.json");
+    let layer = if v2.exists() {
+        build_kb_layer_v2(&v2)
+    } else if v1.exists() {
+        build_kb_layer_v1(&v1)
+    } else {
+        String::new()
+    };
+    *get_kb_layer_cache().lock().unwrap() = layer;
+}
+
+fn build_kb_layer_v2(index_file: &Path) -> String {
+    let data = std::fs::read_to_string(index_file).unwrap_or_default();
+    let index: KnowledgeIndexV2 = serde_json::from_str(&data).unwrap_or_default();
+    if index.categories.is_empty() { return String::new(); }
+    let mut lines = vec![
+        "### KNOWLEDGE BASE CONTEXT (Auto-generated)".to_string(),
+        format!("Provider: {} | Model: {} | Total chunks: {}",
+            index.embedding_provider, index.embedding_model, index.total_chunks),
+        String::new(),
+        "#### Available Categories:".to_string(),
+    ];
+    for (name, cat) in &index.categories {
+        lines.push(format!("- **{}**: {} ({} chunks)", name, cat.description, cat.chunks.len()));
+        for chunk in cat.chunks.iter().take(3) {
+            if !chunk.summary.is_empty() {
+                lines.push(format!("  - {}: {}", chunk.source_file, chunk.summary));
+            }
+        }
+    }
+    lines.join("\n")
+}
+
+fn build_kb_layer_v1(index_file: &Path) -> String {
+    let data = std::fs::read_to_string(index_file).unwrap_or_default();
+    let index: VectorIndex = serde_json::from_str(&data).unwrap_or_default();
+    if index.chunks.is_empty() { return String::new(); }
+    let files: std::collections::HashSet<&str> =
+        index.chunks.iter().map(|c| c.file_name.as_str()).collect();
+    format!("### KNOWLEDGE BASE (v1 legacy): {} chunks from {} files",
+        index.chunks.len(), files.len())
 }
 
 /// Max tool-call *turns* per conversation (each turn may have multiple tool calls).
@@ -168,6 +288,8 @@ pub fn init_global_knowledge_base(app_handle: &AppHandle) {
             }
         }
     }
+    // Build KB Layer 2 from bundled index so every chat has context immediately
+    rebuild_kb_layer(&global_kb);
 }
 
 fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -490,7 +612,10 @@ pub async fn read_kb_file(project_dir: String, file_name: String) -> Result<Stri
 }
 
 #[tauri::command]
-pub async fn add_knowledge_base_files(project_dir: String) -> Result<usize, String> {
+pub async fn add_knowledge_base_files(
+    project_dir: String,
+    app_handle: AppHandle,
+) -> Result<usize, String> {
     use rfd::FileDialog;
     let paths = FileDialog::new()
         .set_title("Add Document to Knowledge Base")
@@ -502,14 +627,24 @@ pub async fn add_knowledge_base_files(project_dir: String) -> Result<usize, Stri
             std::fs::create_dir_all(&kb_path).map_err(|e| e.to_string())?;
         }
         let mut copied = 0;
-        for file in files {
-            if let Some(name) = file.file_name() {
-                let dest = kb_path.join(name);
-                if std::fs::copy(&file, &dest).is_ok() { copied += 1; }
+        for file in &files {
+            // Use full auto-processing pipeline (chunk + embed + index) instead of plain copy
+            match process_new_kb_file(&app_handle, &kb_path, file).await {
+                Ok(()) => copied += 1,
+                Err(e) => {
+                    // Fallback: plain copy if pipeline fails (e.g. no embedding API key)
+                    if let Some(name) = file.file_name() {
+                        let dest = kb_path.join(name);
+                        if std::fs::copy(file, &dest).is_ok() {
+                            copied += 1;
+                            let _ = app_handle.emit("terminal-output",
+                                format!("[KB] Copied {} without embedding: {}",
+                                    name.to_string_lossy(), e));
+                        }
+                    }
+                }
             }
         }
-        // Invalidate KB cache after adding files.
-        get_kb_query_cache().lock().unwrap().clear();
         Ok(copied)
     } else {
         Ok(0)
@@ -865,7 +1000,7 @@ pub async fn send_ai_message(
 
 // ── Conversation loop ─────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT: &str = r#"You are an expert ESP-IDF coding assistant. You help users build firmware for ESP32 and KidBright boards.
+const BASE_SYSTEM_PROMPT: &str = r#"You are an expert ESP-IDF coding assistant. You help users build firmware for ESP32 and KidBright boards.
 
 YOU HAVE TWO WAYS TO HELP:
 1. AUTONOMOUS CREATION: When asked to create a project, write files, or fix code, you MUST use the `write_file` tool or `create_project_workspace` tool. Do NOT just print the code in the chat.
@@ -1696,7 +1831,7 @@ async fn run_conversation_loop(
             all_files.iter().map(|(_, rel)| rel.clone()).collect::<Vec<_>>().join("\n")
         }
     };
-    let dynamic_system_prompt = format!("{}\n\n### AVAILABLE KNOWLEDGE BASE FILES:\n{}", SYSTEM_PROMPT, kb_files_list);
+    let dynamic_system_prompt = format!("{}\n\n### AVAILABLE KNOWLEDGE BASE FILES:\n{}", get_final_system_prompt(), kb_files_list);
 
     loop {
         let api_messages = build_api_messages(&dynamic_system_prompt, &messages, model);
@@ -2148,7 +2283,7 @@ async fn run_google_conversation_loop(
             all_files.iter().map(|(_, rel)| rel.clone()).collect::<Vec<_>>().join("\n")
         }
     };
-    let dynamic_system_prompt = format!("{}\n\n### AVAILABLE KNOWLEDGE BASE FILES:\n{}", SYSTEM_PROMPT, kb_files_list);
+    let dynamic_system_prompt = format!("{}\n\n### AVAILABLE KNOWLEDGE BASE FILES:\n{}", get_final_system_prompt(), kb_files_list);
 
     loop {
         let contents = build_google_contents(&messages);
@@ -3060,55 +3195,104 @@ async fn try_bing_search(query: &str) -> Result<Value, String> {
 
 // ── Embeddings ────────────────────────────────────────────────────────────────
 
-async fn get_embeddings_internal(api_key: &str, mut base_url: String, text: &str) -> Result<Vec<f32>, String> {
-    if !base_url.starts_with("http") && !base_url.is_empty() {
-        base_url = format!("http://{}", base_url);
-    }
-    let is_local_ai_url = base_url.contains("localhost")
-        || base_url.contains("127.0.0.1")
-        || (base_url.contains(":1234") && !base_url.contains("openai"))
-        || base_url.contains(":11434")
-        || base_url.contains(":8080")
-        || base_url.contains(":5000")
-        || base_url.contains(":8000");
-    if api_key.trim().is_empty() && !is_local_ai_url {
-        return Err("API key is empty".to_string());
-    }
-    if is_local_ai_url && !base_url.contains("/v1") {
-        base_url = format!("{}/v1", base_url.trim_end_matches('/'));
-    }
+/// EmbeddingProvider abstraction — รองรับ Gemini, OpenAI, Local API
+async fn get_embeddings_internal(
+    api_key: &str,
+    mut base_url: String,
+    provider: &str,
+    model: &str,
+    text: &str,
+) -> Result<Vec<f32>, String> {
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .unwrap_or_else(|_| Client::new());
-    let res = client.post(format!("{}/embeddings", base_url.trim_end_matches('/')))
-        .header("Authorization", format!("Bearer {}", api_key))
-        .json(&json!({ "input": text, "model": "text-embedding-3-small" }))
-        .send()
-        .await
-        .map_err(|e| format!("Embedding request failed: {}", e))?;
-    let data: Value = res.json().await.map_err(|e| format!("Failed to parse embedding response: {}", e))?;
-    if let Some(err) = data["error"].as_object() {
-        return Err(err["message"].as_str().unwrap_or("Unknown API error").to_string());
+
+    match provider {
+        // ── Gemini Embedding API ──────────────────────────────────────────────
+        "gemini" => {
+            let url = format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:embedContent?key={}",
+                model, api_key
+            );
+            let body = json!({
+                "model": format!("models/{}", model),
+                "content": { "parts": [{ "text": text }] }
+            });
+            let res = client.post(&url).json(&body).send().await
+                .map_err(|e| format!("Gemini embedding request failed: {}", e))?;
+            let data: Value = res.json().await
+                .map_err(|e| format!("Gemini embedding parse failed: {}", e))?;
+            if let Some(msg) = data["error"]["message"].as_str() {
+                return Err(format!("Gemini embedding error: {}", msg));
+            }
+            Ok(data["embedding"]["values"]
+                .as_array().ok_or("No embedding values in Gemini response")?
+                .iter().map(|v| v.as_f64().unwrap_or(0.0) as f32)
+                .collect())
+        }
+        // ── OpenAI / Local API (OpenAI-compatible format) ─────────────────────
+        _ => {
+            if !base_url.starts_with("http") && !base_url.is_empty() {
+                base_url = format!("http://{}", base_url);
+            }
+            let is_local = base_url.contains("localhost")
+                || base_url.contains("127.0.0.1")
+                || (base_url.contains(":1234") && !base_url.contains("openai"))
+                || base_url.contains(":11434")
+                || base_url.contains(":8080")
+                || base_url.contains(":5000")
+                || base_url.contains(":8000");
+            if api_key.trim().is_empty() && !is_local {
+                return Err("API key is empty".to_string());
+            }
+            if is_local && !base_url.contains("/v1") {
+                base_url = format!("{}/v1", base_url.trim_end_matches('/'));
+            }
+            let res = client
+                .post(format!("{}/embeddings", base_url.trim_end_matches('/')))
+                .header("Authorization", format!("Bearer {}", api_key))
+                .json(&json!({ "input": text, "model": model }))
+                .send().await
+                .map_err(|e| format!("Embedding request failed: {}", e))?;
+            let data: Value = res.json().await
+                .map_err(|e| format!("Failed to parse embedding response: {}", e))?;
+            if let Some(err) = data["error"].as_object() {
+                return Err(err["message"].as_str().unwrap_or("Unknown API error").to_string());
+            }
+            Ok(data["data"][0]["embedding"]
+                .as_array().ok_or("No embedding data in response")?
+                .iter().map(|v| v.as_f64().unwrap_or(0.0) as f32)
+                .collect())
+        }
     }
-    let embedding = data["data"][0]["embedding"]
-        .as_array()
-        .ok_or("No embedding data in response")?
-        .iter()
-        .map(|v| v.as_f64().unwrap_or(0.0) as f32)
-        .collect();
-    Ok(embedding)
 }
 
+/// Route embeddings request using config (provider, model, key)
 async fn get_embeddings(_app_handle: &AppHandle, text: &str) -> Result<Vec<f32>, String> {
-    let (api_key, base_url) = {
+    let (api_key, provider, model, base_url) = {
         let config = read_config();
-        (
-            config["api_key"].as_str().unwrap_or("").to_string(),
-            config["base_url"].as_str().unwrap_or("https://api.openai.com/v1").to_string(),
-        )
+        let prov = config["embedding_provider"].as_str()
+            .unwrap_or("openai").to_string();
+        let key = match prov.as_str() {
+            "gemini" => config["google_api_key"].as_str().unwrap_or("").to_string(),
+            "local"  => String::new(),
+            _        => config["api_key"].as_str().unwrap_or("").to_string(),
+        };
+        let mdl = config["embedding_model"].as_str()
+            .unwrap_or(if prov == "gemini" { "text-embedding-004" }
+                       else               { "text-embedding-3-small" })
+            .to_string();
+        let url = match prov.as_str() {
+            "gemini" => "https://generativelanguage.googleapis.com/v1beta".to_string(),
+            "local"  => config["embedding_local_url"].as_str()
+                            .unwrap_or("http://localhost:1234").to_string(),
+            _        => config["base_url"].as_str()
+                            .unwrap_or("https://api.openai.com/v1").to_string(),
+        };
+        (key, prov, mdl, url)
     };
-    get_embeddings_internal(&api_key, base_url, text).await
+    get_embeddings_internal(&api_key, base_url, &provider, &model, text).await
 }
 
 fn cosine_similarity(v1: &[f32], v2: &[f32]) -> f32 {
@@ -3172,6 +3356,375 @@ fn chunk_text(text: &str, target_size: usize, overlap: usize) -> Vec<String> {
     chunks
 }
 
+// ── Auto-Processing Pipeline helpers ─────────────────────────────────────────
+
+fn detect_category(rel_key: &str) -> &'static str {
+    if rel_key.starts_with("sensor_examples/") || rel_key.contains("sensor") {
+        "sensor_examples"
+    } else if rel_key.starts_with("wiki/hardware/") || rel_key.contains("pinout")
+           || rel_key.contains("hardware") || rel_key.contains("kidbright32") {
+        "hardware_reference"
+    } else if rel_key.starts_with("wiki/projects/") || rel_key.contains("minibike")
+           || rel_key.contains("micromouse") || rel_key.contains("skate")
+           || rel_key.contains("formula") {
+        "workshop_activities"
+    } else if rel_key.starts_with("wiki/") {
+        "ide_guides"
+    } else {
+        "general"
+    }
+}
+
+/// UTF-8 safe summary — ใช้ chars() ไม่ใช่ byte index
+fn generate_summary(text: &str) -> String {
+    // Priority 1: Markdown heading
+    for line in text.lines() {
+        let t = line.trim();
+        // slice หลัง ASCII prefix เท่านั้น (ASCII รับประกัน char boundary)
+        if t.starts_with("### ") { return t[4..].trim().chars().take(120).collect(); }
+        if t.starts_with("## ")  { return t[3..].trim().chars().take(120).collect(); }
+        if t.starts_with("# ")   { return t[2..].trim().chars().take(120).collect(); }
+    }
+    // Priority 2: นับ char ไม่ใช่ byte
+    let mut count = 0;
+    let mut result = String::new();
+    for ch in text.chars() {
+        result.push(ch);
+        if ch == '.' || ch == '!' || ch == '?' {
+            count += 1;
+            if count >= 2 { break; }
+        }
+        if result.chars().count() >= 150 { break; }
+    }
+    result.replace('\n', " ").trim().to_string()
+}
+
+fn compute_file_hash(content: &str) -> String {
+    let mut hash: u64 = 14695981039346656037u64;
+    for byte in content.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    format!("fnv1a:{:016x}", hash)
+}
+
+/// Smart chunking with priority boundary detection (UTF-8 safe throughout)
+/// P1: Markdown Heading  P2: C function {  P3: Double newline
+/// P4: Sentence .!?      P5: Fallback → chunk_text()
+fn smart_chunk_text(text: &str, target_size: usize, overlap: usize) -> Vec<String> {
+    if text.trim().is_empty() { return Vec::new(); }
+
+    let mut boundaries: Vec<usize> = Vec::new();
+    let mut prev_line_start = 0usize;
+
+    for (i, ch) in text.char_indices() {
+        if ch == '\n' {
+            // ✅ Safe: slice ระหว่าง newline positions (รู้ว่าเป็น char boundary)
+            let line = text[prev_line_start..i].trim_start();
+            if line.starts_with("## ") || line.starts_with("### ") || line.starts_with("# ") {
+                boundaries.push(prev_line_start);
+            } else if line.ends_with('{') && !line.trim_start().starts_with("//") {
+                boundaries.push(prev_line_start);
+            } else if i + 1 < text.len()
+                && text.as_bytes().get(i + 1) == Some(&b'\n')
+            {
+                boundaries.push(i + 1);
+            }
+            prev_line_start = i + 1;
+        } else if (ch == '.' || ch == '!' || ch == '?')
+            && text.get(i + ch.len_utf8()..)
+                .map(|s| s.starts_with([' ', '\n']))
+                .unwrap_or(true)
+        {
+            boundaries.push(i + ch.len_utf8());
+        }
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    if boundaries.is_empty() {
+        return chunk_text(text, target_size, overlap);
+    }
+
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut seg_start = 0usize;
+
+    let mut all_bounds = boundaries.clone();
+    all_bounds.push(text.len());
+
+    for &bound in &all_bounds {
+        // ✅ Find nearest char boundary
+        let safe_bound = (bound..=text.len())
+            .find(|&b| text.is_char_boundary(b))
+            .unwrap_or(text.len());
+        let segment = &text[seg_start..safe_bound];
+
+        if current.len() + segment.len() > target_size && !current.is_empty() {
+            chunks.push(current.clone());
+            let tail_start = current.len().saturating_sub(overlap);
+            let safe_start = (tail_start..=current.len())
+                .find(|&i| current.is_char_boundary(i))
+                .unwrap_or(current.len());
+            let overlap_buf = current[safe_start..].to_string();
+            current = overlap_buf;
+            current.push(' ');
+        }
+        current.push_str(segment);
+        seg_start = safe_bound;
+    }
+    if !current.trim().is_empty() { chunks.push(current); }
+    if chunks.is_empty() && !text.is_empty() {
+        // ✅ UTF-8 safe fallback
+        chunks.push(text.chars().take(target_size).collect());
+    }
+    chunks
+}
+
+// ── Embedding retry + parallel ────────────────────────────────────────────────
+
+async fn embed_with_retry(
+    api_key: &str,
+    base_url: String,
+    provider: &str,
+    model: &str,
+    text: &str,
+    chunk_idx: usize,
+) -> EmbedResult {
+    const MAX_RETRIES: u32 = 3;
+    for attempt in 0..MAX_RETRIES {
+        if attempt > 0 {
+            tokio::time::sleep(
+                tokio::time::Duration::from_secs(2u64.pow(attempt - 1))
+            ).await;
+        }
+        match get_embeddings_internal(api_key, base_url.clone(), provider, model, text).await {
+            Ok(emb) if !emb.is_empty() => {
+                return EmbedResult { chunk_index: chunk_idx, embedding: emb, success: true };
+            }
+            _ => {}
+        }
+    }
+    eprintln!("[KB] chunk {} embed failed after {} retries", chunk_idx, MAX_RETRIES);
+    EmbedResult { chunk_index: chunk_idx, embedding: Vec::new(), success: false }
+}
+
+async fn embed_chunks_parallel(
+    chunks: &[String],
+    api_key: &str,
+    base_url: &str,
+    provider: &str,
+    model: &str,
+    app_handle: &AppHandle,
+    rel_key: &str,
+) -> Vec<EmbedResult> {
+    use futures::future;
+    let concurrency = if base_url.contains("localhost") || base_url.contains("127.0.0.1") {
+        2usize
+    } else {
+        5usize
+    };
+    let total = chunks.len();
+
+    // Collect owned data first to avoid lifetime issues with closures
+    let tasks: Vec<(usize, String, String, String, String, String, AppHandle, String, usize)> =
+        chunks.iter().enumerate().map(|(i, chunk_text)| {
+            (
+                i,
+                chunk_text.clone(),
+                api_key.to_string(),
+                base_url.to_string(),
+                provider.to_string(),
+                model.to_string(),
+                app_handle.clone(),
+                rel_key.to_string(),
+                total,
+            )
+        }).collect();
+
+    // Process in chunks of `concurrency` to respect rate limits
+    let mut results = Vec::with_capacity(total);
+    for batch in tasks.chunks(concurrency) {
+        let batch_futures: Vec<_> = batch.iter().map(|(i, text, key, url, prov, mdl, handle, rel, tot)| {
+            let i = *i;
+            let text = text.clone();
+            let key = key.clone();
+            let url = url.clone();
+            let prov = prov.clone();
+            let mdl = mdl.clone();
+            let handle = handle.clone();
+            let rel = rel.clone();
+            let tot = *tot;
+            async move {
+                let _ = handle.emit("kb-indexing-progress", json!({
+                    "file":    rel,
+                    "current": i + 1,
+                    "total":   tot,
+                    "phase":   "embedding",
+                }));
+                embed_with_retry(&key, url, &prov, &mdl, &text, i).await
+            }
+        }).collect();
+        let batch_results = future::join_all(batch_futures).await;
+        results.extend(batch_results);
+    }
+    results
+}
+
+// ── Main Auto-Processing Pipeline ────────────────────────────────────────────
+
+async fn process_new_kb_file(
+    app_handle: &AppHandle,
+    kb_path: &Path,
+    src_file: &Path,
+) -> Result<(), String> {
+    // Step 1: Copy file to KB directory
+    let file_name = src_file.file_name()
+        .ok_or("Invalid filename")?.to_string_lossy();
+    let dest = kb_path.join(file_name.as_ref());
+    std::fs::copy(src_file, &dest).map_err(|e| e.to_string())?;
+
+    let content = std::fs::read_to_string(&dest)
+        .map_err(|e| format!("Read error: {}", e))?;
+    if content.trim().is_empty() { return Ok(()); }
+
+    // Step 2: Detect category & relative key
+    let rel_key = dest.strip_prefix(kb_path).unwrap_or(&dest)
+        .to_string_lossy().replace('\\', "/");
+    let category = detect_category(&rel_key);
+
+    // Step 3: Smart chunk
+    let chunks = smart_chunk_text(&content, 2000, 100);
+    let total = chunks.len();
+
+    let _ = app_handle.emit("kb-indexing-start", json!({
+        "file": rel_key, "total_chunks": total, "category": category,
+    }));
+
+    // Step 4: Read embedding config
+    let (api_key, embed_provider, embed_model, embed_base_url) = {
+        let config = read_config();
+        let prov = config["embedding_provider"].as_str().unwrap_or("openai").to_string();
+        let key = match prov.as_str() {
+            "gemini" => config["google_api_key"].as_str().unwrap_or("").to_string(),
+            "local"  => String::new(),
+            _        => config["api_key"].as_str().unwrap_or("").to_string(),
+        };
+        let mdl = config["embedding_model"].as_str()
+            .unwrap_or(if prov == "gemini" { "text-embedding-004" }
+                       else               { "text-embedding-3-small" })
+            .to_string();
+        let url = match prov.as_str() {
+            "gemini" => "https://generativelanguage.googleapis.com/v1beta".to_string(),
+            "local"  => config["embedding_local_url"].as_str()
+                            .unwrap_or("http://localhost:1234").to_string(),
+            _        => config["base_url"].as_str()
+                            .unwrap_or("https://api.openai.com/v1").to_string(),
+        };
+        (key, prov, mdl, url)
+    };
+
+    // Step 5: Load existing index v2
+    let index_file = kb_path.join(".knowledge_index.json");
+    let mut index: KnowledgeIndexV2 = if index_file.exists() {
+        let data = std::fs::read_to_string(&index_file).unwrap_or_default();
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        KnowledgeIndexV2 {
+            version:            "2.0".to_string(),
+            embedding_provider: embed_provider.clone(),
+            embedding_model:    embed_model.clone(),
+            ..Default::default()
+        }
+    };
+
+    // Step 6: Parallel embed (Fix C+D)
+    let embed_results = embed_chunks_parallel(
+        &chunks, &api_key, &embed_base_url,
+        &embed_provider, &embed_model, app_handle, &rel_key,
+    ).await;
+
+    // Step 7: Update category chunks
+    let cat_entry = index.categories
+        .entry(category.to_string())
+        .or_insert_with(|| CategoryChunks {
+            description: format!("Files in {}", category),
+            chunks: Vec::new(),
+        });
+    cat_entry.chunks.retain(|c| c.source_file != rel_key);
+
+    let file_hash = compute_file_hash(&content);
+    let mut chunk_ids    = Vec::new();
+    let mut success_count = 0u32;
+    let mut failed_count  = 0u32;
+
+    for (i, (chunk_content, result)) in chunks.iter().zip(embed_results.iter()).enumerate() {
+        let chunk_id = format!(
+            "{}_chunk_{}",
+            rel_key.replace(['/', '.', '-'], "_"),
+            i + 1
+        );
+        chunk_ids.push(chunk_id.clone());
+
+        if result.success { success_count += 1; } else { failed_count += 1; }
+
+        // Fix B: บันทึกทุก chunk ไม่ว่า embed สำเร็จหรือไม่
+        cat_entry.chunks.push(ChunkMetadata {
+            chunk_id:        chunk_id.clone(),
+            source_file:     rel_key.clone(),
+            category:        category.to_string(),
+            chunk_index:     i as u32 + 1,
+            total_chunks:    total as u32,
+            char_start:      0,
+            char_end:        chunk_content.len(),
+            summary:         generate_summary(chunk_content),  // Fix A: UTF-8 safe
+            content:         chunk_content.clone(),
+            embedding:       result.embedding.clone(),
+            needs_embedding: !result.success,                  // Fix B: flag
+            indexed_at:      "now".to_string(),
+        });
+    }
+
+    // Step 8: Update file_index
+    index.file_index.insert(rel_key.clone(), FileIndexEntry {
+        category:        category.to_string(),
+        total_chunks:    total as u32,
+        chunk_ids,
+        file_hash,
+        file_size_bytes: dest.metadata().map(|m| m.len()).unwrap_or(0),
+        last_indexed:    "now".to_string(),
+    });
+    index.total_chunks = index.categories.values()
+        .map(|c| c.chunks.len() as u32).sum();
+
+    // Fix D: saving progress
+    let _ = app_handle.emit("kb-indexing-progress", json!({
+        "file": rel_key, "phase": "saving",
+    }));
+
+    // Step 9: Atomic write
+    let tmp = index_file.with_extension("json.tmp");
+    let data = serde_json::to_string_pretty(&index).map_err(|e| e.to_string())?;
+    std::fs::write(&tmp, &data).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &index_file).map_err(|e| e.to_string())?;
+
+    // Step 10: Rebuild KB Layer 2
+    rebuild_kb_layer(kb_path);
+    get_kb_query_cache().lock().unwrap().clear();
+
+    // Fix B+D: Final notification with failed count
+    let _ = app_handle.emit("kb-updated", json!({
+        "file":          rel_key,
+        "category":      category,
+        "total_chunks":  total,
+        "indexed":       success_count,
+        "failed":        failed_count,
+        "needs_reindex": failed_count > 0,
+    }));
+
+    Ok(())
+}
+
 // ── Helper: recursive KB file collector ──────────────────────────────────────
 // Walks knowledge_base/ recursively and collects text/doc files (md, txt, c, h).
 // Returns Vec of (absolute_path, relative_key) pairs.
@@ -3233,7 +3786,7 @@ async fn reindex_knowledge_base(project_path: &Path) -> Result<usize, String> {
                 let mut success = false;
                 let mut temp_chunks = Vec::new();
                 for chunk_content in chunks {
-                    if let Ok(embedding) = get_embeddings_internal(&api_key, base_url.clone(), &chunk_content).await {
+                    if let Ok(embedding) = get_embeddings_internal(&api_key, base_url.clone(), "openai", "text-embedding-3-small", &chunk_content).await {
                         temp_chunks.push(KnowledgeChunk {
                             file_name: rel_key.clone(), content: chunk_content, embedding,
                         });
@@ -3373,24 +3926,96 @@ fn keyword_knowledge_search(kb_path: &Path, query: &str) -> Value {
 }
 
 async fn vector_knowledge_search(app_handle: &AppHandle, project_path: &Path, query: &str) -> Value {
-    let _ = reindex_knowledge_base(project_path).await;
     let query_embedding = match get_embeddings(app_handle, query).await {
         Ok(e) => e,
         Err(_) => return json!([]),
     };
     let kb_path = project_path.join("knowledge_base");
-    let index_file = kb_path.join(".embeddings.json");
-    if !index_file.exists() { return json!([]); }
-    let data = std::fs::read_to_string(&index_file).unwrap_or_default();
-    let index: VectorIndex = serde_json::from_str(&data).unwrap_or_default();
-    if index.chunks.is_empty() { return json!([]); }
-    let mut matches: Vec<(f32, &KnowledgeChunk)> = index.chunks.iter()
-        .map(|c| (cosine_similarity(&query_embedding, &c.embedding), c))
-        .filter(|(s, _)| *s > 0.3)
-        .collect();
-    matches.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-    let results: Vec<Value> = matches.iter().take(5).map(|(score, chunk)| {
-        json!({ "file": chunk.file_name, "score": score, "content": chunk.content, "method": "vector", "note": "TRUNCATED chunk — call read_file for complete content" })
-    }).collect();
-    json!(results)
+    let index_v2_file = kb_path.join(".knowledge_index.json");
+    let index_v1_file = kb_path.join(".embeddings.json");
+
+    // ── Schema v2 ─────────────────────────────────────────────────────────────
+    if index_v2_file.exists() {
+        let data = std::fs::read_to_string(&index_v2_file).unwrap_or_default();
+        let index: KnowledgeIndexV2 = serde_json::from_str(&data).unwrap_or_default();
+
+        // Provider mismatch detection
+        let config_provider = {
+            let cfg = read_config();
+            cfg["embedding_provider"].as_str().unwrap_or("openai").to_string()
+        };
+        if !index.embedding_provider.is_empty()
+            && index.embedding_provider != config_provider
+        {
+            return json!({
+                "warning": format!(
+                    "⚠️ Provider mismatch: index built with '{}' but current is '{}'.\
+                     Please Re-index in Settings.",
+                    index.embedding_provider, config_provider
+                ),
+                "mismatch": true
+            });
+        }
+
+        // Fix 5: filter out chunks pending re-index BEFORE cosine_similarity
+        let searchable_chunks: Vec<&ChunkMetadata> = index.categories
+            .values()
+            .flat_map(|c| c.chunks.iter())
+            .filter(|c| !c.needs_embedding)
+            .collect();
+
+        if searchable_chunks.is_empty() {
+            return json!({
+                "warning": "⚠️ All chunks are pending re-index. \
+                            Click Re-index in Settings to complete indexing.",
+                "needs_reindex": true
+            });
+        }
+
+        let mut matches: Vec<(f32, &ChunkMetadata)> = searchable_chunks.iter()
+            .map(|c| (cosine_similarity(&query_embedding, &c.embedding), *c))
+            .filter(|(s, _)| *s > 0.3)
+            .collect();
+        matches.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+
+        let results: Vec<Value> = matches.iter().take(5).map(|(score, chunk)| {
+            json!({
+                "file":     chunk.source_file,
+                "category": chunk.category,
+                "summary":  chunk.summary,
+                "chunk_id": chunk.chunk_id,
+                "score":    score,
+                "content":  chunk.content,
+                "method":   "vector_v2",
+                "note":     "TRUNCATED chunk — call read_kb_file for complete content",
+            })
+        }).collect();
+
+        if !results.is_empty() { return json!(results); }
+    }
+
+    // ── Fallback schema v1 (.embeddings.json) ────────────────────────────────
+    if index_v1_file.exists() {
+        let data = std::fs::read_to_string(&index_v1_file).unwrap_or_default();
+        let index: VectorIndex = serde_json::from_str(&data).unwrap_or_default();
+        if !index.chunks.is_empty() {
+            let mut matches: Vec<(f32, &KnowledgeChunk)> = index.chunks.iter()
+                .map(|c| (cosine_similarity(&query_embedding, &c.embedding), c))
+                .filter(|(s, _)| *s > 0.3)
+                .collect();
+            matches.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+            let results: Vec<Value> = matches.iter().take(5).map(|(score, chunk)| {
+                json!({
+                    "file":    chunk.file_name,
+                    "score":   score,
+                    "content": chunk.content,
+                    "method":  "vector_v1",
+                    "note":    "TRUNCATED chunk — call read_file for complete content",
+                })
+            }).collect();
+            if !results.is_empty() { return json!(results); }
+        }
+    }
+
+    json!([])
 }

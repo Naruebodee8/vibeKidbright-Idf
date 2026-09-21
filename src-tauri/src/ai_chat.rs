@@ -3809,6 +3809,68 @@ async fn reindex_knowledge_base(project_path: &Path) -> Result<usize, String> {
     Ok(index.chunks.len())
 }
 
+#[tauri::command]
+pub async fn get_kb_index_status(project_dir: String) -> Value {
+    let kb_path = Path::new(&project_dir).join("knowledge_base");
+    if !kb_path.exists() {
+        return json!({
+            "has_index": false, "chunks": 0, "files": 0,
+            "mode": "none", "last_indexed": 0, "provider": "", "version": "none"
+        });
+    }
+    // Try v2 index first (.knowledge_index.json)
+    let v2_path = kb_path.join(".knowledge_index.json");
+    if v2_path.exists() {
+        if let Ok(data) = std::fs::read_to_string(&v2_path) {
+            if let Ok(idx) = serde_json::from_str::<KnowledgeIndexV2>(&data) {
+                let total_chunks: usize = idx.categories.values().map(|c| c.chunks.len()).sum();
+                let total_files  = idx.file_index.len();
+                let pending: usize = idx.categories.values()
+                    .flat_map(|c| c.chunks.iter())
+                    .filter(|c| c.needs_embedding).count();
+                let mode = if pending > 0 { "vector_partial" } else { "vector_v2" };
+                return json!({
+                    "has_index": total_chunks > 0,
+                    "chunks": total_chunks,
+                    "files": total_files,
+                    "mode": mode,
+                    "last_indexed": 0,
+                    "provider": idx.embedding_provider,
+                    "version": "2.0",
+                    "pending_embed": pending
+                });
+            }
+        }
+    }
+    // Fallback to v1 index (.embeddings.json)
+    let v1_path = kb_path.join(".embeddings.json");
+    if v1_path.exists() {
+        if let Ok(data) = std::fs::read_to_string(&v1_path) {
+            if let Ok(idx) = serde_json::from_str::<VectorIndex>(&data) {
+                let files: std::collections::HashSet<_> =
+                    idx.chunks.iter().map(|c| &c.file_name).collect();
+                let last_ts = idx.last_indexed.values().copied().max().unwrap_or(0);
+                return json!({
+                    "has_index": !idx.chunks.is_empty(),
+                    "chunks": idx.chunks.len(),
+                    "files": files.len(),
+                    "mode": "vector_v1",
+                    "last_indexed": last_ts,
+                    "provider": "openai",
+                    "version": "1.0",
+                    "pending_embed": 0
+                });
+            }
+        }
+    }
+    // KB folder exists but no index yet
+    let file_count = collect_kb_files(&kb_path).len();
+    json!({
+        "has_index": false, "chunks": 0, "files": file_count,
+        "mode": "keyword", "last_indexed": 0, "provider": "", "version": "none"
+    })
+}
+
 // ── Knowledge search (with query cache) ───────────────────────────────────────
 
 pub async fn knowledge_search(app_handle: &AppHandle, project_path: &Path, query: &str) -> Value {

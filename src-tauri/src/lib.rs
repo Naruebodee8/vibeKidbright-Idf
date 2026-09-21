@@ -70,6 +70,7 @@ pub fn run() {
             ai_chat::add_knowledge_base_files,
             ai_chat::refresh_knowledge_base,
             ai_chat::toggle_knowledge_base_file,
+            ai_chat::get_kb_index_status,
             ai_chat::send_ai_message,
             ai_chat::stop_ai_generation,
             ai_chat::undo_ai_changes,

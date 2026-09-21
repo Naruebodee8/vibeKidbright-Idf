@@ -3811,7 +3811,7 @@ async fn reindex_knowledge_base(project_path: &Path) -> Result<usize, String> {
 
 #[tauri::command]
 pub async fn get_kb_index_status(project_dir: String) -> Value {
-    let kb_path = Path::new(&project_dir).join("knowledge_base");
+    let kb_path = resolve_kb_path(&project_dir);  // ใช้ resolve_kb_path เหมือน command อื่นๆ
     if !kb_path.exists() {
         return json!({
             "has_index": false, "chunks": 0, "files": 0,

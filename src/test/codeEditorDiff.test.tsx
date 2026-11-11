@@ -11,6 +11,11 @@ import CodeEditor from "../CodeEditor";
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
 const invokeMock = vi.fn();
+const diffProps = vi.hoisted(() => ({ current: null as null | {
+    keepCurrentOriginalModel: boolean;
+    keepCurrentModifiedModel: boolean;
+    onMount: (instance: unknown) => void;
+} }));
 
 vi.mock("@tauri-apps/api/core", () => ({
     invoke: (...args: unknown[]) => invokeMock(...args),
@@ -24,7 +29,10 @@ vi.mock("@monaco-editor/react", () => ({
     default: (props: { value?: string }) => (
         <div data-testid="mock-editor" data-value={props.value} />
     ),
-    DiffEditor: () => <div data-testid="mock-diff-editor" />,
+    DiffEditor: (props: NonNullable<typeof diffProps.current>) => {
+        diffProps.current = props;
+        return <div data-testid="mock-diff-editor" />;
+    },
 }));
 
 describe("CodeEditor diff flow", () => {
@@ -76,7 +84,7 @@ describe("CodeEditor diff flow", () => {
         fireEvent.click(screen.getByText(/Keep/));
 
         await waitFor(() => {
-            expect(invokeMock).toHaveBeenCalledWith("accept_diff", { path: "/proj/main/main.c" });
+            expect(invokeMock).toHaveBeenCalledWith("accept_diff", { path: "/proj/main/main.c", expectedContent: "new content" });
         });
 
         await waitFor(() => {
@@ -97,7 +105,7 @@ describe("CodeEditor diff flow", () => {
         fireEvent.click(screen.getByText(/Undo/));
 
         await waitFor(() => {
-            expect(invokeMock).toHaveBeenCalledWith("reject_diff", { path: "/proj/main/main.c" });
+            expect(invokeMock).toHaveBeenCalledWith("reject_diff", { path: "/proj/main/main.c", expectedContent: "new content" });
         });
 
         await waitFor(() => {
@@ -124,4 +132,53 @@ describe("CodeEditor diff flow", () => {
         expect(screen.getByText("Review AI Changes")).toBeInTheDocument();
         errSpy.mockRestore();
     });
+});
+
+
+describe("CodeEditor explicit review requests", () => {
+    beforeEach(() => { vi.clearAllMocks(); });
+    it("sends only one Keep while the native write is in progress", async () => {
+        let release!: () => void;
+        invokeMock.mockImplementation((cmd:string) => cmd==="check_pending_diff" ? Promise.resolve("reviewed") :
+            cmd==="accept_diff" ? new Promise<void>(resolve=>{release=resolve;}) : Promise.resolve(null));
+        render(<CodeEditor value="old" onChange={()=>{}} filePath="/proj/main/main.c"/>);
+        await screen.findByText("Review AI Changes");
+        const keep=screen.getByTitle("Accept AI proposed changes");
+        fireEvent.click(keep);fireEvent.click(keep);
+        expect(invokeMock.mock.calls.filter(call=>call[0]==="accept_diff")).toHaveLength(1);
+        expect(keep).toBeDisabled();
+        release();
+        await waitFor(()=>expect(screen.queryByText("Review AI Changes")).not.toBeInTheDocument());
+    });
+    it("checks the exact file again when Simulator requests its review", async () => {
+        let proposal:string|null=null;
+        invokeMock.mockImplementation((cmd:string)=>Promise.resolve(cmd==="check_pending_diff"?proposal:null));
+        render(<CodeEditor value="old" onChange={()=>{}} filePath="D:/project/main/main.c"/>);
+        await screen.findByTestId("mock-editor");
+        proposal="review this main";
+        const alias=["","","?","D:","project","main","main.c"].join("\\");
+        fireEvent(window,new CustomEvent("vibe-review-diff",{detail:{path:alias}}));
+        await screen.findByText("Review AI Changes");
+        expect(invokeMock.mock.calls.some(call=>call[0]==="accept_diff")).toBe(false);
+    });
+});
+
+
+it("disposes diff models only after the diff widget has detached them", async () => {
+    invokeMock.mockImplementation((cmd: string) => Promise.resolve(cmd === "check_pending_diff" ? "reviewed" : null));
+    render(<CodeEditor value="old" onChange={() => {}} filePath="/proj/main/main.c" />);
+    await screen.findByTestId("mock-diff-editor");
+    const props = diffProps.current!;
+    expect(props.keepCurrentOriginalModel).toBe(true);
+    expect(props.keepCurrentModifiedModel).toBe(true);
+    const original = { isDisposed: () => false, dispose: vi.fn() };
+    const modified = { isDisposed: () => false, dispose: vi.fn() };
+    let disposed!: () => void;
+    props.onMount({ getModel: () => ({ original, modified }), onDidDispose: (callback: () => void) => { disposed = callback; } });
+    disposed();
+    expect(original.dispose).not.toHaveBeenCalled();
+    expect(modified.dispose).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(original.dispose).toHaveBeenCalledTimes(1);
+    expect(modified.dispose).toHaveBeenCalledTimes(1);
 });

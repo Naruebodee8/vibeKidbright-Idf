@@ -25,6 +25,7 @@ pub(crate) async fn execute_tool(
     project_path: &mut PathBuf,
     message_id: &str,
     no_workspace: &mut bool,
+    requirements: crate::hardware_contract::Requirements,
 ) -> Value {
     if super::workflow::workspace_tool_blocked(name, *no_workspace) {
         return json!({
@@ -40,11 +41,85 @@ pub(crate) async fn execute_tool(
         });
     }
 
+    if name!="create_project_workspace" && crate::hardware_contract::generation_tool(name,input) {
+        if let Some(port)=requirements.fan {
+            if let Err(error)=crate::hardware_contract::save(project_path,port){return json!({"error":error});}
+        }
+    }
+    if name == "report_simulation_unsupported" {
+        return match crate::simulation_project::report_simulation_unsupported(project_path, &input["capabilities"]) {
+            Ok(report) => report,
+            Err(error) => json!({"error":error}),
+        };
+    }
+    if name == "generate_device_program" {
+        if !requirements.simulation || !requirements.classic_board {
+            return json!({"error":"generate_device_program requires automatic companion generation and KidBright32/ESP32 target; preserve other targets' firmware."});
+        }
+        let Some(program)=input["program_json"].as_str() else{return json!({"error":"program_json is required"});};
+        let hardware=match input.get("hardware_json") {
+            None=>crate::device_program::Hardware::default(),
+            Some(value)=>match value.as_str().ok_or("hardware_json must be a JSON string").and_then(|text|serde_json::from_str(text).map_err(|_|"Invalid hardware_json")) {Ok(value)=>value,Err(error)=>return json!({"error":error})},
+        };
+        let bundle=match crate::device_program::compile(program,hardware){Ok(bundle)=>bundle,Err(error)=>return json!({"error":error})};
+        if let Some(port)=requirements.fan{if !bundle.outputs.iter().any(|output|output==port.key()){return json!({"error":format!("Selected fan {} is absent from the complete device program",port.key())});}}
+        if let Err(error)=crate::simulation_project::can_generate_device_program(project_path){return json!({"error":error});}
+        let firmware=Box::pin(execute_tool(app_handle,"write_file",&json!({"path":"main/main.c","content":bundle.firmware}),project_path,message_id,no_workspace,requirements)).await;
+        if firmware.get("error").is_some(){return firmware;}
+        let simulation=Box::pin(execute_tool(app_handle,"generate_simulation",&json!({"program_json":program}),project_path,message_id,no_workspace,requirements)).await;
+        if simulation.get("error").is_some(){return simulation;}
+        return match crate::simulation_project::verify_generated_program(project_path){
+            Ok(_)=>json!({"result":"Generated C and JS from one complete checked device behavior. Review Keep/Undo for both. Build/Flash and physical hardware have not been tested by this tool.","checks":crate::device_program::result(&bundle)}),
+            Err(error)=>json!({"error":error}),
+        }
+    }
+    if name == "generate_fan_control" {
+        if !requirements.classic_board{return json!({"error":"Classic fan template requires the KidBright32/ESP32 target"});}
+        let Some(port)=requirements.fan else { return json!({"error":"Select USB/OUT1/OUT2 for the fan before generation; do not guess the connection."}); };
+        let firmware=crate::fan_recipe::firmware(port);
+        let result=Box::pin(execute_tool(app_handle,"write_file",&json!({"path":"main/main.c","content":firmware}),project_path,message_id,no_workspace,requirements)).await;
+        if result.get("error").is_some(){return result;}
+        if requirements.simulation {
+            let program=crate::fan_recipe::program(port).to_string();
+            let result=Box::pin(execute_tool(app_handle,"generate_simulation",&json!({"program_json":program}),project_path,message_id,no_workspace,requirements)).await;
+            if result.get("error").is_some(){return result;}
+        }
+        return json!({"result":"Generated matching SW1 toggle fan code. Review Keep/Undo for existing files. Build/Flash and physical hardware are not tested by this generator.","port":port,"gpio":port.gpio(),"simulation":requirements.simulation});
+    }
+
+    // The checked generator can only target the companion. Reuse the existing
+    // metadata, backup and Keep/Undo workflow; it never rewrites firmware.
+    let generated;
+    let checked_companion = name == "generate_simulation";
+    let (name, input) = if checked_companion {
+        let program = match input["program_json"].as_str() {
+            Some(program) => program,
+            None => return json!({"error":"generate_simulation requires program_json; read simulator_compiler.md"}),
+        };
+        let source = match crate::simulation_compiler::compile(program) {
+            Ok(source) => source,
+            Err(error) => return json!({"error":error}),
+        };
+        if let Some(port)=requirements.fan {
+            if let Err(error)=crate::hardware_contract::validate_simulation(&source,port){return json!({"error":error});}
+            if let Err(error)=crate::hardware_contract::check(project_path,crate::hardware_contract::Requirements{fan:Some(port),simulation:false,..Default::default()}){return json!({"error":error});}
+        }
+        generated = json!({"path":crate::simulation_project::SOURCE_PATH,"content":source});
+        ("write_file", &generated)
+    } else { (name, input) };
+
     match name {
+        "read_device_program" => match crate::simulation_project::read_device_program(project_path){
+            Ok(program)=>json!({"result":program}),Err(error)=>json!({"error":error}),
+        },
+
         // ── read_file ──────────────────────────────────────────────────────────
         "read_file" => {
             let rel_path = input["path"].as_str().unwrap_or("");
-            let full_path = project_path.join(rel_path);
+            let full_path = match super::workflow::project_file_path(project_path, rel_path) {
+                Ok(path) => path,
+                Err(error) => return json!({"error":error}),
+            };
             match std::fs::read_to_string(&full_path) {
                 Ok(c) => json!({ "result": c }),
                 Err(e) => json!({ "error": format!("Error reading file: {}", e) }),
@@ -54,8 +129,27 @@ pub(crate) async fn execute_tool(
         // ── write_file ─────────────────────────────────────────────────────────
         "write_file" => {
             let rel_path = input["path"].as_str().unwrap_or("");
-            let content = input["content"].as_str().unwrap_or("");
-            let full_path = project_path.join(rel_path);
+            let original = input["content"].as_str().unwrap_or("");
+            if crate::simulation_project::is_companion_path(rel_path) && !checked_companion {
+                return json!({"error":"Use generate_simulation with program_json for simulation/main.sim.js. Raw AI companion writes are rejected so syntax, APIs, output and limits are checked before file creation. Read simulator_compiler.md; preserve existing firmware."});
+            }
+            if rel_path.replace('\\',"/").trim_start_matches("./")=="main/main.c" {
+                if let Some(port)=requirements.fan {
+                    if let Err(error)=crate::hardware_contract::validate_firmware(original,port){return json!({"error":error});}
+                }
+            }
+            let stamped;
+            let content = if crate::simulation_project::is_companion_path(rel_path) {
+                stamped = match crate::simulation_project::prepare_companion(project_path, rel_path, original) {
+                    Ok(source) => source,
+                    Err(error) => return json!({ "error": error }),
+                };
+                stamped.as_str()
+            } else { original };
+            let full_path = match super::workflow::project_file_path(project_path, rel_path) {
+                Ok(path) => path,
+                Err(error) => return json!({"error":error}),
+            };
             let trimmed = content.trim();
             if trimmed.is_empty() {
                 return json!({ "error": "write_file rejected: empty content." });
@@ -87,7 +181,7 @@ pub(crate) async fn execute_tool(
                 }
                 {
                     let mut diffs = get_pending_diffs().lock().unwrap();
-                    diffs.insert(full_path.clone(), content.to_string());
+                    crate::pending_diff::propose(&mut diffs, &full_path, content.to_string());
                 }
                 let _ = app_handle.emit("ai-diff-pending", json!({
                     "fullPath": full_path.to_string_lossy(),
@@ -115,7 +209,10 @@ pub(crate) async fn execute_tool(
         // ── list_files ─────────────────────────────────────────────────────────
         "list_files" => {
             let rel_path = input["path"].as_str().unwrap_or(".");
-            let full_path = project_path.join(rel_path);
+            let full_path = match super::workflow::project_file_path(project_path, rel_path) {
+                Ok(path) => path,
+                Err(error) => return json!({"error":error}),
+            };
             match std::fs::read_dir(&full_path) {
                 Ok(entries) => {
                     let mut items: Vec<String> = entries.flatten().filter_map(|e| {
@@ -165,7 +262,10 @@ pub(crate) async fn execute_tool(
         "diff_file" => {
             let rel_path = input["path"].as_str().unwrap_or("");
             let new_content = input["new_content"].as_str().unwrap_or("");
-            let full_path = project_path.join(rel_path);
+            let full_path = match super::workflow::project_file_path(project_path, rel_path) {
+                Ok(path) => path,
+                Err(error) => return json!({"error":error}),
+            };
             let old_content = if full_path.exists() {
                 std::fs::read_to_string(&full_path).unwrap_or_default()
             } else {
@@ -216,6 +316,9 @@ pub(crate) async fn execute_tool(
                     Ok(path) => path,
                     Err(error) => return json!({"error":error}),
                 };
+                if let Some(port)=requirements.fan {
+                    if let Err(error)=crate::hardware_contract::save(&new_proj_path,port){return json!({"error":error});}
+                }
                 *project_path = new_proj_path.clone();
                 *no_workspace = false;
                 let _ = app_handle.emit("force-project-dir", new_proj_path.to_string_lossy().to_string());
@@ -275,6 +378,16 @@ pub(crate) async fn execute_tool(
             if let Some(rom_elf_dir) = crate::esp_idf::find_esp_rom_elf_dir(&tools_path) {
                 cmd.env("ESP_ROM_ELF_DIR", rom_elf_dir);
             }
+            #[cfg(target_os = "macos")]
+            {
+                let sdk=crate::macos_idf::Sdk{idf:idf_path.clone(),tools:tools_path.clone()};
+                let native=tokio::task::spawn_blocking(move ||crate::macos_idf::environment(&sdk,&std::sync::atomic::AtomicBool::new(false))).await;
+                match native {
+                    Ok(Ok(ready))=>{cmd.envs(ready.env).env_remove("PYTHONHOME").env_remove("PYTHONPATH");},
+                    Ok(Err(error))=>return json!({"error":error}),
+                    Err(error)=>return json!({"error":error.to_string()}),
+                }
+            }
             match cmd.output().await {
                 Ok(output) => {
                     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -324,6 +437,17 @@ pub(crate) async fn execute_tool(
                     .env("PATH", build_ai_idf_path_cached(&tools_path));
                 if let Some(rom_elf_dir) = crate::esp_idf::find_esp_rom_elf_dir(&tools_path) {
                     process.env("ESP_ROM_ELF_DIR", rom_elf_dir);
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    if let Err(error)=crate::macos_idf::check_path(project_path,"Project path") {return json!({"error":error});}
+                    let sdk=crate::macos_idf::Sdk{idf:idf_path.clone(),tools:tools_path.clone()};
+                    let native=tokio::task::spawn_blocking(move ||crate::macos_idf::environment(&sdk,&std::sync::atomic::AtomicBool::new(false))).await;
+                    match native {
+                        Ok(Ok(ready))=>{process.envs(ready.env).env_remove("PYTHONHOME").env_remove("PYTHONPATH");},
+                        Ok(Err(error))=>return json!({"error":error}),
+                        Err(error)=>return json!({"error":error.to_string()}),
+                    }
                 }
                 if let Some(python_bin) = find_idf_python_bin(&tools_path) {
                     if let Some(rel) = command.trim_start().strip_prefix("idf.py") {

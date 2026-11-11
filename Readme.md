@@ -1,10 +1,12 @@
-# VibeKidbright IDE 3.7.1 ? Classic KidBright hotfix
+# VibeKidbright IDE 3.7.2
 
-Based on the supplied 3.7.0 source, byte-identical to tag v3.7.0. This is an isolated maintenance branch, not a downgrade of the current 3.7.4 development workspace.
+ESP-IDF IDE and AI assistant for classic KidBright32 boards, with a local Unity simulator. This release includes the existing board Build/Flash workflow, paired C/JavaScript generation, simulator validation and native macOS SDK installation.
 
-Fixes managed toolchain activation/Python paths/cache refresh without restarting the app, and isolates explicit new-project requests from an already-open project. Includes current classic hardware references and a refreshed compiled system prompt. No ?AI/?AI Plus target selection, ADB commands, learning workspace or deployment is included.
+- [Release notes](docs/releases/3.7.2.md)
+- [Local simulator guide](docs/LOCAL-SIMULATOR-3.7.1-TH.md)
+- [macOS setup and recovery](docs/MACOS-ESP-IDF-RECOVERY-TH.md)
 
-See [release notes](docs/releases/3.7.1.md). Source, lockfiles and installer metadata all use 3.7.1. The Windows release workflow targets hotfix/3.7.1 and creates a draft with make_latest=false.
+The simulator implements a checked subset of board behavior; it does not execute arbitrary ESP-IDF firmware or emulate Wi-Fi/FreeRTOS. Firmware and simulator programs remain separate files.
 
 ## Build and check
 
@@ -13,14 +15,12 @@ Use a Node version accepted by package.json and the Tauri build prerequisites fo
 ```sh
 npm ci
 npm test
-npm run check:hotfix
 npm run build:release
-cd src-tauri
-cargo test --lib --locked --offline
-cd ..
-npm run tauri -- build --bundles nsis --ci
+cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+cargo check --locked --manifest-path src-tauri/Cargo.toml
+npm run tauri -- build --ci
 ```
 
-The existing automatic toolchain download remains enabled. The hotfix corrects activation order and environment discovery; it does not bundle the large ESP-IDF toolchain into the installer.
+Push a version tag such as `v3.7.2` to run the Windows and macOS installer workflows. Both attach artifacts to the same **draft** release without changing the latest public release. macOS packaging waits for native Intel and Apple Silicon SDK installation and firmware-build checks. Signing/notarization requires the corresponding repository secrets.
 
-Tests use local fixtures and the compiled UI with simulated IPC. No live AI inference, real toolchain installation, hardware flash, installer-over-existing-install test or macOS installer qualification was performed by this hotfix preparation. Validate the Windows upgrade from 3.7.0 on a separate machine/Sandbox before public distribution.
+Local verification was performed on Windows. Actual macOS installer/firmware results must be read from Actions for the release tag. GUI installation, upgrades and Flash on real hardware still require hands-on verification before public distribution. ESP-IDF is downloaded separately from the IDE installer.

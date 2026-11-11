@@ -242,6 +242,8 @@ pub(crate) fn resolve_idf_paths_for_ai(app_handle: &AppHandle) -> Option<(PathBu
 }
 
 pub(crate) fn find_idf_python_bin(tools_path: &Path) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    { return crate::macos_idf::find_python(tools_path).ok(); }
     let python_env_dir = tools_path.join("python_env");
     let entries = std::fs::read_dir(&python_env_dir).ok()?;
     for entry in entries.flatten() {
@@ -284,6 +286,8 @@ fn build_ai_idf_path_inner(tools_path: &Path) -> OsString {
                 if !entry.path().is_dir() { continue; }
                 if let Ok(versions) = std::fs::read_dir(entry.path()) {
                     for ver in versions.flatten() {
+                        let cmake_app = ver.path().join("CMake.app/Contents/bin");
+                        if cmake_app.is_dir() { paths.push(cmake_app); }
                         let bin = ver.path().join("bin");
                         if bin.exists() { paths.push(bin); }
                         if ver.path().is_dir() { paths.push(ver.path()); }
@@ -440,6 +444,9 @@ pub async fn stop_ai_generation(app_handle: AppHandle) -> Result<(), String> {
 pub async fn undo_ai_changes(app_handle: AppHandle, message_id: String) -> Result<(), String> {
     if let Some(state) = app_handle.try_state::<AiBackupState>() {
         let mut backups = state.backups.lock().unwrap();
+        if let Some(files) = backups.get(&message_id) {
+            for path in files.keys() { crate::simulation_project::recheck_companion(path)?; }
+        }
         if let Some(files) = backups.remove(&message_id) {
             for (path, content) in files {
                 if let Some(original) = content {
@@ -458,38 +465,58 @@ pub async fn undo_ai_changes(app_handle: AppHandle, message_id: String) -> Resul
 pub async fn check_pending_diff(path: String) -> Result<Option<String>, String> {
     let target_path = PathBuf::from(path);
     let diffs = get_pending_diffs().lock().unwrap();
-    Ok(diffs.get(&target_path).cloned())
+    crate::pending_diff::get(&diffs, &target_path)
 }
 
 #[tauri::command]
-pub async fn accept_diff(app_handle: AppHandle, path: String) -> Result<String, String> {
+pub async fn accept_diff(app_handle: AppHandle, path: String, expected_content: Option<String>) -> Result<String, String> {
     let target_path = PathBuf::from(path);
-    let mut diffs = get_pending_diffs().lock().unwrap();
-    if let Some(content) = diffs.remove(&target_path) {
-        match std::fs::write(&target_path, &content) {
-            Ok(_) => {
-                let _ = app_handle.emit(
-                    "file-modified",
-                    json!({ "path": target_path.to_string_lossy() }).to_string(),
-                );
-                Ok(format!("Changes applied to {}", target_path.display()))
-            }
-            Err(e) => Err(format!("Failed to write file: {}", e)),
-        }
-    } else {
-        Err("No pending diff found for this file.".to_string())
+    crate::simulation_project::recheck_companion(&target_path)?;
+    {
+        let mut diffs=get_pending_diffs().lock().map_err(|_|"Pending diff state unavailable")?;
+        crate::pending_diff::accept_with(&mut diffs,&target_path,expected_content.as_deref(),|target,content| {
+            crate::simulation_project::recheck_companion(target)?;
+            crate::pending_diff::atomic_write(target,content)
+        })?;
     }
+    let display=dunce::simplified(&target_path).to_string_lossy().to_string();
+    let _=app_handle.emit("file-modified",json!({"path":display}).to_string());
+    let _=app_handle.emit("ai-diff-resolved",json!({"path":display,"action":"keep"}));
+    Ok(format!("Changes applied to {}",target_path.display()))
 }
 
 #[tauri::command]
-pub async fn reject_diff(path: String) -> Result<String, String> {
-    let target_path = PathBuf::from(path);
-    let mut diffs = get_pending_diffs().lock().unwrap();
-    if diffs.remove(&target_path).is_some() {
-        Ok("Changes rejected. File was not modified.".to_string())
-    } else {
-        Err("No pending diff found for this file.".to_string())
+pub async fn reject_diff(app_handle: AppHandle, path: String, expected_content: Option<String>) -> Result<String, String> {
+    let target_path=PathBuf::from(path);
+    {
+        let mut diffs=get_pending_diffs().lock().map_err(|_|"Pending diff state unavailable")?;
+        crate::pending_diff::reject(&mut diffs,&target_path,expected_content.as_deref())?;
     }
+    let _=app_handle.emit("ai-diff-resolved",json!({"path":dunce::simplified(&target_path).to_string_lossy(),"action":"undo"}));
+    Ok("Changes rejected. File was not modified.".into())
+}
+
+#[tauri::command]
+pub fn list_pending_diffs(project_dir:String)->Result<Vec<crate::pending_diff::Review>,String> {
+    if project_dir=="." {return Ok(vec![]);}
+    let scope=crate::simulation_paths::PathScope::new(Path::new(&project_dir))?;
+    let diffs=get_pending_diffs().lock().map_err(|_|"Pending diff state unavailable")?;
+    Ok(crate::pending_diff::list(&scope,&diffs))
+}
+
+#[tauri::command]
+pub fn restore_pending_diff_backup(window:tauri::WebviewWindow,project_dir:String,entries:Vec<crate::pending_diff::RecoveryEntry>)
+    ->Result<Vec<crate::pending_diff::Review>,String> {
+    if window.label()!="main" || project_dir=="." {return Err("Recovery is restricted to the selected IDE project".into());}
+    let scope=crate::simulation_paths::PathScope::new(Path::new(&project_dir))?;
+    let reviews={
+        let mut diffs=get_pending_diffs().lock().map_err(|_|"Pending diff state unavailable")?;
+        crate::pending_diff::restore(&scope,&mut diffs,&entries)?
+    };
+    for review in &reviews {
+        let _=window.emit("ai-diff-pending",json!({"fullPath":review.path,"relPath":review.relative_path}).to_string());
+    }
+    Ok(reviews)
 }
 
 #[tauri::command]
@@ -498,6 +525,10 @@ pub async fn send_ai_message(
     messages: Vec<ChatMessage>,
     project_dir: String,
     message_id: String,
+    simulation_enabled: Option<bool>,
+    user_request: Option<String>,
+    hardware_target: Option<crate::fan_recipe::FanPort>,
+    selected_board: Option<String>,
 ) -> Result<(), String> {
     if let Some(state) = app_handle.try_state::<AiAbortState>() {
         state.0.store(false, Ordering::SeqCst);
@@ -571,12 +602,23 @@ pub async fn send_ai_message(
     // A workspace is "real" only if the path is non-trivial AND the directory exists
     // with at least one file in it. An explicit creation request separately
     // requires a fresh workspace even while the old project remains open.
-    let fresh_creation = crate::ai::workflow::requests_new_project(&messages);
+    let fresh_creation = user_request.as_deref().map(crate::ai::workflow::requests_new_project_text)
+        .unwrap_or_else(|| crate::ai::workflow::requests_new_project(&messages));
     let mut no_workspace = fresh_creation || project_dir == "." || project_dir.is_empty() || {
         // Also treat as no-workspace if the directory doesn't exist or is empty
         !project_path.exists() || std::fs::read_dir(&project_path)
             .map(|mut d| d.next().is_none())  // true if empty dir
             .unwrap_or(true)                   // true if can't read
+    };
+
+    // Accept the legacy frontend argument, but simulation companions are now automatic.
+    let _legacy_simulation_option = simulation_enabled;
+    let stored_target = if no_workspace { None } else { crate::hardware_contract::load(&project_path)? };
+    let request = user_request.as_deref().unwrap_or("");
+    let requirements = crate::hardware_contract::Requirements {
+        fan: crate::hardware_contract::choose(request, hardware_target, stored_target, fresh_creation)?,
+        simulation: true,
+        classic_board: selected_board.as_deref().unwrap_or("kidbright32")=="kidbright32",
     };
 
     let watcher_app = app_handle.clone();
@@ -706,6 +748,12 @@ pub async fn send_ai_message(
         let mut final_error = String::new();
 
         let mut dynamic_system_prompt = SYSTEM_PROMPT.to_string();
+        dynamic_system_prompt.push_str(&crate::hardware_contract::instructions(requirements));
+        if requirements.simulation {
+            dynamic_system_prompt.push_str(crate::simulation_project::AI_INSTRUCTIONS);
+            dynamic_system_prompt.push_str("\n[SHARED DEVICE PROGRAM] For a new supported KidBright32 program, prefer generate_device_program with ONE complete behavior program_json. It generates C and JS together for matrix/temperature/light/buttons/digital inputs/OUT/USB/buzzer and conditions/loops. Read simulator_paired_programs.md. For follow-up changes to an owned program, use read_device_program and preserve all unrequested steps/hardware settings before regenerating the complete program. Existing custom firmware must be preserved: use write_file for requested firmware changes and generate_simulation for the companion. A simulator-only repair must never replace main/main.c. Never leave boilerplate Hello firmware while claiming real device firmware was created. Unsupported work must be disclosed, not omitted.\n");
+            if !requirements.classic_board {dynamic_system_prompt.push_str("Selected target is not KidBright32/ESP32: do not use classic paired firmware or fan templates. The local simulator does not establish hardware compatibility for this target.\n");}
+        }
         if fresh_creation {
             dynamic_system_prompt.push_str("\n[FRESH PROJECT REQUIRED] The latest user request asks for a new project. create_project_workspace must succeed before reading or writing project files. The previous workspace is blocked for this turn. Cancellation or a duplicate folder must not fall back to the old project.\n");
         }
@@ -757,32 +805,28 @@ pub async fn send_ai_message(
                 run_google_conversation_loop(
                     &app_handle, &key, &mod_name, messages.clone(),
                     &mut project_path, Arc::clone(&message_id), &mut no_workspace,
-                    &dynamic_system_prompt,
+                    &dynamic_system_prompt, requirements,
                 ).await
             } else {
                 run_conversation_loop(
                     &app_handle, &key, &mod_name, &url, messages.clone(),
                     &mut project_path, current_is_openrouter, Arc::clone(&message_id), &mut no_workspace,
-                    &dynamic_system_prompt,
+                    &dynamic_system_prompt, requirements,
                 ).await
             };
 
             match result {
-                Ok(_) => return,
+                Ok(_) => {
+                    if let Some(error)=crate::ai::workflow::creation_completion_error(fresh_creation,no_workspace) {
+                        let _=app_handle.emit("ai-chat-error",error);
+                        let _=app_handle.emit("terminal-output",format!("[AI] {error}"));
+                    }
+                    return;
+                },
                 Err(e) => {
-                    let err_msg_str = e.to_string();
-                    let err_lower = err_msg_str.to_lowercase();
-                    if err_lower.contains("429")
-                        || err_lower.contains("quota")
-                        || err_lower.contains("rate limit")
-                        || err_lower.contains("too many requests")
-                        || err_lower.contains("overloaded")
-                        || err_lower.contains("502")
-                        || err_lower.contains("503")
-                        || err_lower.contains("unavailable")
-                        || err_lower.contains("provider error")
-                        || err_lower.contains("404")
-                        || err_lower.contains("not found")
+                    let can_fallback=crate::ai::providers::should_fallback(&e);
+                    let err_msg_str=crate::ai::workflow::completion_error_message(&e).unwrap_or(&e).to_string();
+                    if can_fallback
                     {
                         let _ = app_handle.emit(
                             "terminal-output",
@@ -897,5 +941,16 @@ mod tests {
             !path.to_string_lossy().is_empty(),
             "resolve_kb_path must always return a non-empty fallback path"
         );
+    }
+}
+
+#[cfg(test)]
+mod mac_cmake_discovery_tests {
+    #[test] fn discovers_macos_cmake_app_in_an_sdk_without_using_a_login_shell() {
+        let dir=tempfile::tempdir().unwrap();
+        let bin=dir.path().join("tools/cmake/3.30/CMake.app/Contents/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let result=super::build_ai_idf_path_inner(dir.path());
+        assert!(std::env::split_paths(&result).any(|path|path==bin));
     }
 }

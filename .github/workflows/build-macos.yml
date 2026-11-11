@@ -2,14 +2,19 @@ name: Build macOS Installer
 
 on:
   push:
-    branches: [ hotfix/3.7.1 ]
+    tags: [ 'v*' ]
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  native-idf-check:
+    uses: ./.github/workflows/macos-idf-smoke.yml
+    permissions:
+      contents: read
   build:
+    needs: native-idf-check
     runs-on: macos-latest
     env:
       HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.KEYCHAIN_PASSWORD != '' }}
@@ -91,6 +96,7 @@ jobs:
         id: get_version
         run: |
           VERSION=$(python3 -c "import json; d=json.load(open('main_repo/src-tauri/tauri.conf.json')); print(d['version'])")
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then echo "Tag and app version do not match"; exit 1; fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "TAG=v$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
@@ -175,8 +181,8 @@ jobs:
           tag_name: ${{ steps.get_version.outputs.TAG }}
           target_commitish: ${{ github.sha }}
           make_latest: false
-          name: 'vibeKidbright ${{ steps.get_version.outputs.TAG }} (macOS)'
-          body: 'ดาวน์โหลดไฟล์ .dmg ด้านล่างเพื่อติดตั้งบน macOS (รองรับทั้ง Apple Silicon และ Intel)'
+          name: 'VibeKidbright IDE ${{ steps.get_version.outputs.TAG }}'
+          body_path: main_repo/docs/releases/${{ steps.get_version.outputs.VERSION }}.md
           draft: true
           prerelease: false
           files: |

@@ -150,7 +150,7 @@ pub fn get_toolchain_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .path()
         .app_data_dir()
         .map_err(|e| format!("Cannot resolve AppData: {}", e))?;
-    Ok(base.join("toolchain"))
+    crate::toolchain_storage::resolve_location(&base)
 }
 
 /// ตรวจสอบว่า toolchain พร้อมใช้งานหรือยัง
@@ -160,10 +160,23 @@ fn is_toolchain_ready(toolchain_dir: &Path) -> bool {
 
 // ── Tauri Commands ────────────────────────────────────────────────────────────
 
+/// Read actual available space and propose an app-owned SDK directory.
+#[tauri::command]
+pub async fn get_toolchain_storage(app_handle: AppHandle, directory: Option<String>)
+    -> Result<crate::toolchain_storage::StoragePlan, String>
+{
+    let data = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || crate::toolchain_storage::inspect(&data, directory.as_deref().map(Path::new)))
+        .await.map_err(|e| format!("ตรวจพื้นที่จัดเก็บไม่สำเร็จ: {e}"))?
+}
+
+
 /// ตรวจสอบสถานะ toolchain — frontend เรียกตอนเปิดแอป
 /// Returns: "ready" | "not_installed" | { version, path }
 #[tauri::command]
 pub async fn check_toolchain(app_handle: AppHandle) -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "macos")]
+    { return check_native_toolchain(app_handle).await; }
     let dir = get_toolchain_dir(&app_handle)?;
     crate::esp_idf::invalidate_idf_environment();
     auto_repair_on_startup(&dir);
@@ -196,8 +209,12 @@ pub async fn check_toolchain(app_handle: AppHandle) -> Result<serde_json::Value,
 pub async fn download_toolchain(
     app_handle: AppHandle,
     url: Option<String>,
+    install_dir: Option<String>,
 ) -> Result<String, String> {
     let _install_guard = try_acquire_install(install_flag())?;
+    #[cfg(target_os = "macos")]
+    { return download_native_toolchain(app_handle, url, install_dir).await; }
+
 
     // ถ้ามี custom URL ให้ใช้เป็น single-entry มิฉะนั้นใช้ค่าเริ่มต้น (GitHub Release)
     let parts: Vec<(String, String)> = url
@@ -210,10 +227,22 @@ pub async fn download_toolchain(
                 .collect()
         });
 
-    let toolchain_dir = get_toolchain_dir(&app_handle)?;
+    let app_data = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    let current_dir = get_toolchain_dir(&app_handle)?;
+    let requested = install_dir.as_deref().map(Path::new);
+    if let Some(dir) = requested { crate::toolchain_storage::validate_location(&app_data, dir)?; }
+    // Do not demand 12 GiB or move anything when the selected SDK is already ready.
+    let existing = requested.unwrap_or(&current_dir);
+    let toolchain_dir = if is_toolchain_ready(existing) {
+        existing.to_path_buf()
+    } else {
+        // Checked before deleting staging data or opening any network connection.
+        crate::toolchain_storage::select_install_dir(&app_data, requested)?
+    };
 
     // ถ้ามีอยู่แล้ว ข้ามเลย
     if is_toolchain_ready(&toolchain_dir) {
+        if toolchain_dir != current_dir { crate::toolchain_storage::save_location(&app_data, &toolchain_dir)?; }
         auto_repair_on_startup(&toolchain_dir);
         crate::esp_idf::invalidate_idf_environment();
         emit_progress(&app_handle, "done", 100, "Toolchain ready.");
@@ -271,6 +300,8 @@ pub async fn download_toolchain(
         let _ = std::fs::remove_dir_all(&staging_dir);
         return Err(error);
     }
+    // Commit the location only after activation succeeded; failed installs keep the old setting.
+    crate::toolchain_storage::save_location(&app_data, &toolchain_dir)?;
     crate::esp_idf::invalidate_idf_environment();
     emit_progress(&app_handle, "done", 100, "Toolchain ready; paths refreshed.");
     Ok(format!(
@@ -309,6 +340,8 @@ pub async fn remove_toolchain(app_handle: AppHandle) -> Result<String, String> {
 /// เรียกใช้บนเครื่องที่ติดตั้ง toolchain แล้วแต่ build ไม่ผ่านด้วย "No Python at ..." error
 #[tauri::command]
 pub async fn repair_toolchain_paths(app_handle: AppHandle) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    { return download_toolchain(app_handle, None, None).await; }
     let toolchain_dir = get_toolchain_dir(&app_handle)?;
     if !toolchain_dir.exists() {
         return Err("Toolchain not installed yet. Please install it first.".to_string());
@@ -330,6 +363,16 @@ pub async fn repair_toolchain_paths(app_handle: AppHandle) -> Result<String, Str
 /// คืนค่า path สำคัญต่างๆ ของ toolchain ให้ frontend ตรวจสอบ
 #[tauri::command]
 pub async fn get_toolchain_paths(app_handle: AppHandle) -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let base = get_toolchain_dir(&app_handle)?;
+        let sdk = native_sdk(&app_handle)?;
+        let python = crate::macos_idf::find_python(&sdk.tools).ok();
+        let report = check_native_toolchain(app_handle).await?;
+        return Ok(serde_json::json!({"toolchain_dir":base,"idf_path":sdk.idf,"tools_path":sdk.tools,
+            "idf_exists":sdk.idf.join("tools/idf.py").exists(),"tools_exists":sdk.tools.exists(),
+            "python_bin":python,"python_ready":report["status"]=="ready","ready":report["status"]=="ready"}));
+    }
     let base = get_toolchain_dir(&app_handle)?;
     let idf_path = base.join("esp-idf");
     let tools_path = base.join(".espressif");
@@ -427,25 +470,9 @@ fn download_and_extract(
     let client = make_http_client()?;
     let total_parts = parts.len();
 
-    // ─── Phase 1: HEAD เพื่อรวม total size (best-effort) ───────────────────
-    let global_total: u64 = {
-        let mut total = 0u64;
-        for (url, _) in parts {
-            let resolved = resolve_download_url(url);
-            if let Ok(resp) = client
-                .head(&resolved)
-                .header("Accept", "application/octet-stream,*/*")
-                .send()
-            {
-                total += resp.content_length().unwrap_or(0);
-            }
-        }
-        total
-    };
-
-    // ─── Phase 2: ดาวน์โหลด ทุกไฟล์พร้อมกัน (parallel) ──────────────────
-    // Shared atomic counter สำหรับ progress รวมจากทุก thread
-    let global_downloaded = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // Aggregate both GET streams, without extra serial HEAD requests.
+    let progress = Arc::new(std::sync::Mutex::new(crate::toolchain_download_progress::Downloads::new(total_parts)));
+    let started = std::time::Instant::now();
 
     let zip_paths: Vec<PathBuf> = (0..total_parts)
         .map(|i| dest_dir.join(format!("_download_{}.zip", i)))
@@ -468,7 +495,7 @@ fn download_and_extract(
                 let client = client.clone();
                 let app = app.clone();
                 let cancel = cancel.clone();
-                let gd = global_downloaded.clone();
+                let progress = progress.clone();
                 let url = url.clone();
                 let label = label.clone();
                 let zip_path = zip_path.clone();
@@ -508,7 +535,7 @@ fn download_and_extract(
                         return Err(format!("Server {} for {}", resp.status(), label));
                     }
 
-                    let part_size = resp.content_length().unwrap_or(0);
+                    progress.lock().map_err(|_| "Download progress unavailable")?.set_size(idx, resp.content_length());
 
                     // Stream ลงไฟล์ด้วย BufWriter (8 MB read buffer + 4 MB write buffer)
                     let raw_file = std::fs::File::create(&zip_path)
@@ -516,13 +543,6 @@ fn download_and_extract(
                     let mut file = BufWriter::with_capacity(4 * 1024 * 1024, raw_file);
                     let mut buf = vec![0u8; 8 * 1024 * 1024]; // 8 MB read buffer
                     let mut local_done: u64 = 0;
-
-                    // Throttle: emit progress ทุก 3 วินาที ลด UI lag
-                    let mut last_emit = std::time::Instant::now();
-                    let emit_interval = std::time::Duration::from_secs(3);
-                    // Speed tracking
-                    let download_start = std::time::Instant::now();
-                    let mut bytes_since_last_emit: u64 = 0;
 
                     loop {
                         if cancel.load(Ordering::SeqCst) {
@@ -538,51 +558,16 @@ fn download_and_extract(
                             .map_err(|e| format!("Write error ({}): {}", label, e))?;
 
                         local_done += n as u64;
-                        bytes_since_last_emit += n as u64;
-                        let combined = gd.fetch_add(n as u64, Ordering::Relaxed) + n as u64;
+                        let mut state = progress.lock().map_err(|_| "Download progress unavailable")?;
+                        if let Some(snapshot) = state.update(idx, local_done, started.elapsed(), false) {
+                            emit_progress(&app, "downloading", snapshot.percent, &snapshot.message());
+                        }
+                    }
 
-                        // Emit ทุก 3 วินาที (ไม่ใช่ทุก chunk) เพื่อลด UI lag
-                        if last_emit.elapsed() >= emit_interval {
-                            let elapsed_secs = last_emit.elapsed().as_secs_f64();
-                            last_emit = std::time::Instant::now();
-
-                            // คำนวณ speed จาก bytes ที่โหลดในช่วง interval นี้
-                            let speed_mbps = (bytes_since_last_emit as f64 / 1_048_576.0) / elapsed_secs;
-                            bytes_since_last_emit = 0;
-
-                            // คำนวณ ETA จาก average speed ตลอดการโหลด
-                            let total_elapsed = download_start.elapsed().as_secs_f64();
-                            let avg_speed = if total_elapsed > 0.0 { local_done as f64 / total_elapsed } else { 1.0 };
-                            let remaining_bytes = part_size.saturating_sub(local_done);
-                            let eta_secs = if avg_speed > 0.0 { remaining_bytes as f64 / avg_speed } else { 0.0 };
-
-                            let eta_str = if eta_secs > 3600.0 {
-                                format!("{:.0}h {:.0}m", eta_secs / 3600.0, (eta_secs % 3600.0) / 60.0)
-                            } else if eta_secs > 60.0 {
-                                format!("{:.0}m {:.0}s", eta_secs / 60.0, eta_secs % 60.0)
-                            } else {
-                                format!("{:.0}s", eta_secs)
-                            };
-
-                            let percent = if global_total > 0 {
-                                ((combined as f64 / global_total as f64) * 49.0) as u8
-                            } else {
-                                (combined / 1_048_576 % 48 + 1) as u8
-                            };
-
-                            let mb_done_total = combined as f64 / 1_048_576.0;
-                            let mb_total = global_total as f64 / 1_048_576.0;
-                            let mb_local = local_done as f64 / 1_048_576.0;
-                            let mb_part  = part_size as f64  / 1_048_576.0;
-
-                            emit_progress(&app, "downloading", percent,
-                                &format!("[{}/{}] {} — {:.1}/{:.1} MB  ⚡ {:.1} MB/s  ⏱ ETA {}",
-                                    idx + 1, total_parts, label,
-                                    mb_local, mb_part,
-                                    speed_mbps,
-                                    if remaining_bytes == 0 { "done".to_string() } else { eta_str }));
-
-                            let _ = mb_done_total + mb_total; // suppress unused warning
+                    {
+                        let mut state = progress.lock().map_err(|_| "Download progress unavailable")?;
+                        if let Some(snapshot) = state.update(idx, local_done, started.elapsed(), true) {
+                            emit_progress(&app, "downloading", snapshot.percent, &snapshot.message());
                         }
                     }
 
@@ -614,6 +599,10 @@ fn download_and_extract(
             return Err(format!("ดาวน์โหลดไฟล์ที่ {} ล้มเหลว: {}", i + 1, e));
         }
     }
+
+    // ZIPs are already on the destination volume: reserve exact expanded bytes for ALL archives.
+    let required = crate::toolchain_storage::required_extraction_bytes(&zip_paths)?;
+    crate::toolchain_storage::ensure_space(dest_dir, required)?;
 
     // ─── Phase 3: Extract ทีละไฟล์ (sequential) ───────────────────────────────
     for (file_idx, ((_, label), zip_path)) in parts.iter().zip(zip_paths.iter()).enumerate() {
@@ -729,6 +718,13 @@ pub async fn build_firmware_with_toolchain(
     project_dir: String,
     extra_args: Option<Vec<String>>,
 ) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut args=vec!["build".to_string()];
+        if let Some(extra)=extra_args {args.extend(extra);}
+        crate::esp_idf::run_shell_command(app_handle,"idf.py".into(),args,Some(project_dir)).await?;
+        return Ok(());
+    }
     let toolchain_dir = get_toolchain_dir(&app_handle)?;
 
     if !is_toolchain_ready(&toolchain_dir) {
@@ -798,6 +794,13 @@ pub async fn build_firmware_with_toolchain(
             }
         }
     }
+
+    let recovered_args = crate::esp_idf::recover_idf_build_args(&project_path, &args);
+    if recovered_args != args {
+        let _ = app_handle.emit("terminal-output",
+            "⚠️ Build configuration is incomplete. Running reconfigure before build.".to_string());
+    }
+    args = recovered_args;
 
     emit_progress(&app_handle, "building", 0, "Starting build...");
 
@@ -1078,6 +1081,9 @@ fn find_python_in_dir(dir: &Path, depth: u32, max_depth: u32) -> Option<PathBuf>
 /// reflect the current machine's toolchain install location.
 /// Safe to call even if toolchain is not installed (no-op).
 pub fn auto_repair_on_startup(toolchain_dir: &Path) {
+    // Native virtualenvs must retain their real base Python, not point at bin/.
+    #[cfg(target_os = "macos")]
+    { let _ = toolchain_dir; return; }
     if !toolchain_dir.join(SENTINEL_FILE).exists() {
         return;
     }
@@ -1101,6 +1107,8 @@ pub fn auto_repair_on_startup(toolchain_dir: &Path) {
 ///   1. Finding the bundled idf-python executable under toolchain/tools/idf-python/
 ///   2. Rewriting `home = <anything>` → `home = <bundled_python_dir>` in every pyvenv.cfg.
 fn patch_venv_paths(toolchain_dir: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    { let _ = toolchain_dir; return Ok(()); }
     // ── Step 1: locate bundled idf-python ─────────────────────────────────
     // Expected layout after extraction:
     //   toolchain/tools/idf-python/<version>/python.exe   (Windows)
@@ -1549,6 +1557,7 @@ mod tests {
         assert!(is_toolchain_ready(&final_dir));
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn activation_patches_python_to_final_path_before_becoming_ready() {
         let temp = tempfile::tempdir().unwrap();
@@ -1640,5 +1649,78 @@ mod tests {
 
         fs::write(tmp.path().join(SENTINEL_FILE), "v1").unwrap();
         assert!(is_toolchain_ready(tmp.path()));
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn native_sdk(app: &AppHandle) -> Result<crate::macos_idf::Sdk, String> {
+    if let Ok((idf,tools)) = crate::esp_idf::resolve_idf_paths(app) {
+        return Ok(crate::macos_idf::Sdk {idf,tools});
+    }
+    crate::macos_idf::paths(&get_toolchain_dir(app)?,std::env::consts::ARCH)
+}
+
+#[cfg(any(target_os = "macos", test))]
+async fn check_native_toolchain(app: AppHandle) -> Result<serde_json::Value,String> {
+    let sdk=native_sdk(&app)?;
+    let installed=sdk.idf.exists() || sdk.tools.exists();
+    let display=sdk.tools.clone();
+    let validation=tokio::task::spawn_blocking(move || crate::macos_idf::validate(&sdk,&AtomicBool::new(false)))
+        .await.map_err(|e|e.to_string())?;
+    Ok(match validation {
+        Ok(_)=>serde_json::json!({"status":"ready","version":crate::macos_idf::VERSION,"path":display,"platform":"macos"}),
+        Err(error)=>serde_json::json!({"status":if installed {"needs_repair"}else{"not_installed"},"version":null,"path":display,
+            "platform":"macos","message":format!("{error}\nUse Install board toolchain to create the native Mac environment. Requires Xcode Command Line Tools and native Python 3.10+ (3.12 recommended).")}),
+    })
+}
+
+#[cfg(any(target_os = "macos", test))]
+async fn download_native_toolchain(app: AppHandle, url: Option<String>, install_dir: Option<String>) -> Result<String,String> {
+    cancel_flag().store(false,Ordering::SeqCst);
+    if url.is_some_and(|u|!u.trim().is_empty()) {
+        return Err("Custom ZIP installation is not supported on macOS. Clear the custom URL and use the native Mac installer.".into());
+    }
+    let app_data=app.path().app_data_dir().map_err(|e|e.to_string())?;
+    let current=get_toolchain_dir(&app)?;
+    let requested=install_dir.as_deref().map(Path::new);
+    let root=requested.unwrap_or(&current).to_path_buf();
+    crate::toolchain_storage::validate_location(&app_data,&root)?;
+    crate::macos_idf::check_path(&root,"SDK install path")?;
+    let sdk=crate::macos_idf::paths(&root,std::env::consts::ARCH)?;
+    // A validated installation does not need another 12 GiB reservation.
+    let check=sdk.clone();
+    let validating_cancel=cancel_flag();
+    let usable=tokio::task::spawn_blocking(move ||crate::macos_idf::validate(&check,&validating_cancel).is_ok()).await.map_err(|e|e.to_string())?;
+    if cancel_flag().load(Ordering::SeqCst){return Err("Cancelled".into());}
+    if !usable {crate::toolchain_storage::select_install_dir(&app_data,Some(&root))?;}
+    let cancelled=cancel_flag();
+    let worker_app=app.clone();let worker_root=root.clone();
+    emit_progress(&app,"downloading",0,"Preparing native macOS ESP-IDF installation");
+    let result=tokio::task::spawn_blocking(move ||crate::macos_idf::install(&worker_root,&cancelled,&|percent,line|{
+        emit_progress(&worker_app,if percent<35 {"downloading"}else{"extracting"},percent,line);
+    })).await.map_err(|e|e.to_string())?;
+    let sdk=match result {Ok(sdk)=>sdk,Err(error)=>{
+        emit_progress(&app,if cancel_flag().load(Ordering::SeqCst){"cancelled"}else{"error"},0,&error);
+        return Err(error);
+    }};
+    if cancel_flag().load(Ordering::SeqCst){return Err("Cancelled".into());}
+    crate::toolchain_storage::save_location(&app_data,&root)?;
+    crate::esp_idf::save_native_idf_paths(&sdk)?;
+    std::fs::write(root.join(SENTINEL_FILE),format!("macos-native-{}",crate::macos_idf::VERSION)).map_err(|e|e.to_string())?;
+    emit_progress(&app,"done",100,"Native macOS compiler and Python environment verified");
+    Ok(format!("Native macOS ESP-IDF installed at {}",sdk.idf.display()))
+}
+
+#[cfg(all(test,target_os="macos"))]
+mod native_venv_preservation_tests {
+    #[test] fn legacy_startup_and_repair_never_rewrite_a_native_home() {
+        let root=tempfile::tempdir().unwrap();
+        let file=root.path().join("tools/python_env/idf5.5_py3.12_env/pyvenv.cfg");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let original="home = /Library/Frameworks/Python.framework/Versions/3.12/bin\n";
+        std::fs::write(&file,original).unwrap();
+        std::fs::write(root.path().join(super::SENTINEL_FILE),"legacy").unwrap();
+        super::auto_repair_on_startup(root.path());super::patch_venv_paths(root.path()).unwrap();
+        assert_eq!(std::fs::read_to_string(file).unwrap(),original);
     }
 }

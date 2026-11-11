@@ -1,9 +1,13 @@
+import "./pendingReviewRecovery";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import AiChat from "./AiChat";
+import SimulatorPanel from "./SimulatorPanel";
+import { saveDirtyFiles } from "./saveProject";
 import CodeEditor from "./CodeEditor";
 import ToolchainSetup from "./ToolchainSetup";
+import { ToolchainStoragePicker, useToolchainStorage } from "./ToolchainStorage";
 import WikiView from "./WikiView";
 import { parseErrorLine, type ParsedBuildError } from "./errorHints";
 import BuildErrorList from "./BuildErrorList";
@@ -277,6 +281,11 @@ function AppShell() {
   const [toolchainReady, setToolchainReady] = React.useState(false);
   const [isRefreshing, setIsRefreshing] = React.useState(false);
   const [isInstallingToolchain, setIsInstallingToolchain] = React.useState(false);
+  const [toolchainDeferred, setToolchainDeferred] = React.useState(false);
+  const handleInstallingChange = React.useCallback((installing: boolean) => {
+    setIsInstallingToolchain(installing);
+    if (installing) setToolchainDeferred(false);
+  }, []);
 
   /** Soft-refresh: re-check toolchain โดยที่ state ของ App ไม่หาย */
   const refreshToolchain = React.useCallback(async () => {
@@ -324,7 +333,7 @@ function AppShell() {
         toolchainReady={toolchainReady}
         onRefreshToolchain={refreshToolchain}
         isInstallingToolchain={isInstallingToolchain}
-        onInstallingToolchainChange={setIsInstallingToolchain}
+        onInstallingToolchainChange={handleInstallingChange}
       />
       <ToastHost />
       {/* Refresh overlay indicator */}
@@ -362,12 +371,14 @@ function AppShell() {
           ตรวจสอบ Toolchain...
         </div>
       )}
-      {!toolchainReady && (
+      {!toolchainReady && !toolchainDeferred && (
         <ToolchainSetup
           onReady={() => setToolchainReady(true)}
           mini={true}
+          autoInstall={false}
+          onDefer={() => setToolchainDeferred(true)}
           isInstalling={isInstallingToolchain}
-          onInstallingChange={setIsInstallingToolchain}
+          onInstallingChange={handleInstallingChange}
         />
       )}
     </>
@@ -425,7 +436,10 @@ function App({
   // Always-current project dir for listeners registered once (avoids stale closures).
   const projectDirRef = useRef(projectDir);
   projectDirRef.current = projectDir;
+  const [showSimulator, setShowSimulator] = useState(false);
+  const [simulationDrafts, setSimulationDrafts] = useState<Record<string, string>>({});
   const [isBuilding, setIsBuilding] = useState(false);
+  const buildInProgressRef = useRef(false);
   const [buildStep, setBuildStep] = useState(0);
   const [buildTotal, setBuildTotal] = useState(0);
   const [buildCurrentTask, setBuildCurrentTask] = useState("");
@@ -451,6 +465,7 @@ function App({
   const [projectFiles, setProjectFiles] = useState<FileEntry[]>([]);
   const [openFolders, setOpenFolders] = useState<Set<string>>(new Set());
   const [showSetupModal, setShowSetupModal] = useState(false);
+  const storage = useToolchainStorage(showSetupModal);
   const [customIdfPath, setCustomIdfPath] = useState("");
   const [customToolsPath, setCustomToolsPath] = useState("");
   const [isSavingPaths, setIsSavingPaths] = useState(false);
@@ -471,7 +486,7 @@ function App({
   const aiChatSendRef = useRef<((text: string) => void) | null>(null);
   const saveAllFilesRef = useRef<() => Promise<void>>(async () => {});
   const buildFlashRef = useRef<() => void>(() => {});
-  useEffect(() => { openFilesRef.current = openFiles; }, [openFiles]);
+  openFilesRef.current = openFiles;
 
   const activeFile = openFiles.find(f => normPath(f.path) === normPath(activeFilePath));
 
@@ -520,35 +535,10 @@ function App({
     if (path) setCustomToolsPath(path as string);
   };
 
-  // --- 🛠 COMMAND WRAPPER HACK FOR WINDOWS 🛠 ---
-  const runIdfWrappedCommand = async (baseCmd: string, args: string[], cwd: string | null) => {
-    let idfPathToUse = customIdfPath;
-    
-    if (!idfPathToUse) {
-      try {
-        const p: any = await invoke("get_idf_custom_paths");
-        if (p && p.idf_path) idfPathToUse = p.idf_path;
-      } catch (e) {}
-    }
-
-    if (idfPathToUse) {
-      const cleanPath = idfPathToUse.replace(/\//g, '\\');
-      const exportScript = `${cleanPath}\\export.bat`;
-      
-      // 🛠 แก้ไข: เอาเครื่องหมาย "" รอบๆ ${exportScript} ออก เพื่อไม่ให้ CMD งงกับตัวอักษร \"
-      const fullCmd = `call ${exportScript} && ${baseCmd} ${args.join(" ")}`;
-      
-      addLog(`[IDF Wrapper] Injecting environment from: ${exportScript}`);
-      
-      return await invoke("run_shell_command", {
-        cmd: "cmd.exe",
-        args: ["/c", fullCmd],
-        cwd
-      });
-    } else {
-      return await invoke("run_shell_command", { cmd: baseCmd, args, cwd });
-    }
-  };
+  // Rust selects the SDK's Python and environment on each platform.
+  // Keep arguments separate; shell wrappers break macOS and paths with spaces.
+  const runIdfWrappedCommand = (baseCmd: string, args: string[], cwd: string | null) =>
+    invoke("run_shell_command", { cmd: baseCmd, args, cwd });
 
   // Check the ESP-IDF environment once; port discovery is polled separately below.
   useEffect(() => {
@@ -564,12 +554,9 @@ function App({
 
     const unlistenFile = listen("file-modified", async (event) => {
       const { path } = JSON.parse(event.payload as string);
-      const normP = path.replace(/\\/g, '/');
-      const isOpen = openFilesRef.current.find(
-        f => f.path.replace(/\\/g, '/') === normP
-      );
+      const isOpen = openFilesRef.current.find(f => normPath(f.path) === normPath(path));
       if (isOpen) {
-        reloadFile(isOpen.path);
+        await reloadFile(isOpen.path);
       }
       loadProjectFiles();
     });
@@ -588,21 +575,21 @@ function App({
         const fullPath = String(data.fullPath || "");
         if (!fullPath) return;
 
-        const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
-        const existing = openFilesRef.current.find(f => norm(f.path) === norm(fullPath));
+        const existing = openFilesRef.current.find(f => normPath(f.path) === normPath(fullPath));
 
         if (!existing) {
           try {
             const content = await invoke("read_project_file", { path: fullPath });
             const fileName = fullPath.split(/[\/\\]/).pop() || "file";
             const newTab: FileTab = { name: fileName, path: fullPath, content: content as string, savedContent: content as string };
-            setOpenFiles(prev => [...prev, newTab]);
+            setOpenFiles(prev => prev.some(file => normPath(file.path) === normPath(fullPath))
+              ? prev : [...prev, newTab]);
           } catch (e) {
             console.error("Failed to auto-open file for diff review:", e);
             return;
           }
         }
-        setActiveFilePath(fullPath);
+        setActiveFilePath(existing?.path || fullPath);
       } catch (e) {
         console.error("Error handling ai-diff-pending in App:", e);
       }
@@ -611,7 +598,7 @@ function App({
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
-        saveAllFilesRef.current();
+        void saveAllFilesRef.current().catch(() => {});
       }
       // Ctrl+Shift+B → Build & Flash
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "b") {
@@ -636,7 +623,7 @@ function App({
     try {
       const content = await invoke("read_project_file", { path });
       setOpenFiles(prev => prev.map(f =>
-        f.path === path ? { ...f, content: content as string, savedContent: content as string } : f
+        normPath(f.path) === normPath(path) ? { ...f, content: content as string, savedContent: content as string } : f
       ));
       addLog(`Auto-reloaded: ${path.split("/").pop()}`);
     } catch (err) {
@@ -674,20 +661,15 @@ function App({
   }, [logs]);
 
   const saveAllFiles = useCallback(async () => {
-    if (openFiles.length === 0) return;
     try {
-      let savedCount = 0;
-      for (const file of openFiles) {
-        await invoke("write_project_file", {
-          path: file.path,
-          content: file.content
-        });
-        savedCount++;
-      }
-      setOpenFiles(prev => prev.map(f => ({ ...f, savedContent: f.content })));
-      addLog(`✨ Saved all ${savedCount} open files`);
+      const count = await saveDirtyFiles(openFilesRef.current,
+        (path, content) => invoke("write_project_file", { path, content }),
+        snapshot => setOpenFiles(previous => previous.map(file => normPath(file.path) === normPath(snapshot.path)
+          ? { ...file, savedContent: snapshot.content } : file)));
+      if (count) addLog(`Saved ${count} modified files`);
     } catch (err) {
-      addLog(`❌ Failed to save files: ${err}`);
+      addLog(`Failed to save files: ${err}`);
+      throw err;
     }
   }, [openFiles]);
   // Keep ref in sync so the keyboard shortcut always calls the latest version
@@ -699,9 +681,8 @@ function App({
       return;
     }
 
-    await saveAllFiles();
-
     try {
+      await saveAllFiles();
       addLog("Opening folder picker to save project as...");
       const result = await invoke("save_project_as", { sourceDir: projectDir });
       const [newPath, fileCount] = (result as string).split("|");
@@ -1025,7 +1006,7 @@ function App({
   };
 
   /** ดาวน์โหลด toolchain จาก GitHub Release (tags: framework, toolchain) */
-  const handleAutoInstallGithub = async () => {
+  const handleAutoInstallGithub = async (installDir: string) => {
     if (isSettingUpEspIdf) return;
 
     setIsSettingUpEspIdf(true);
@@ -1053,7 +1034,7 @@ function App({
     );
 
     try {
-      const result = await invoke("download_toolchain", { url: null });
+      const result = await invoke("download_toolchain", { url: null, installDir });
       addLog(`✅ ${result}`);
       await checkEnvironment();
     } catch (err) {
@@ -1336,7 +1317,7 @@ function App({
   };
 
   const handleBuildFlash = async () => {
-    if (isBuilding) return;
+    if (buildInProgressRef.current) return;
 
     if (!isBuildFlashSupported(selectedBoard)) {
       addLog(`⚠️ ${MIUAI_DEPLOYMENT_UNAVAILABLE}`);
@@ -1350,46 +1331,51 @@ function App({
       return;
     }
 
-    setBuildStep(0);
-    setBuildTotal(0);
-    setBuildErrors([]);
-    setBuildCurrentTask("Initializing...");
-    addLog("--- Starting Build & Flash ---");
-    // Free the COM port: an open serial monitor makes esptool fail with
-    // "PermissionError(13, 'Access is denied.')" on Windows.
-    if (isSerialConnected && selectedBoard !== "miuaiplus") {
-      try {
-        await invoke("stop_serial_monitor");
-        setIsSerialConnected(false);
-        addLog("🔌 Serial monitor disconnected automatically to free the COM port for flashing.");
-        await new Promise((r) => setTimeout(r, 500));
-      } catch (err) {
-        addLog(`⚠️ Could not stop serial monitor before flashing: ${err}`);
-      }
-    }
+    buildInProgressRef.current = true;
+    try {
+      setBuildStep(0);
+      setBuildTotal(0);
+      setBuildErrors([]);
+      setBuildCurrentTask("Initializing...");
+      addLog("--- Starting Build & Flash ---");
+      await executeBuildLifecycle({
+        save: saveAllFiles,
+        run: async () => {
+          // Free the COM port: an open serial monitor makes esptool fail with
+          // "PermissionError(13, 'Access is denied.')" on Windows.
+          if (isSerialConnected && selectedBoard !== "miuaiplus") {
+            try {
+              await invoke("stop_serial_monitor");
+              setIsSerialConnected(false);
+              addLog("🔌 Serial monitor disconnected automatically to free the COM port for flashing.");
+              await new Promise((r) => setTimeout(r, 500));
+            } catch (err) {
+              addLog(`⚠️ Could not stop serial monitor before flashing: ${err}`);
+            }
+          }
 
-    await executeBuildLifecycle({
-      run: async () => {
-        // 🛠 ใช้ Wrapper เพื่อให้มันโหลด export.bat ก่อนสั่ง idf.py เสมอ
-        const flashArgs = ["build", "flash"];
-        if (selectedSerialPort) {
-          flashArgs.push("-p", selectedSerialPort);
-          addLog(`Using port: ${selectedSerialPort}`);
-        } else {
-          addLog("⚠️ No serial port selected — idf.py will use its default port");
-        }
-        await runBuildForBoard(selectedBoard, () =>
-          runIdfWrappedCommand("idf.py", flashArgs, projectDir)
-        );
-      },
-      setResult: setBuildResult,
-      setBuilding: setIsBuilding,
-      onFailure: (err) => {
-        addLog(`Build failed: ${err}`);
-        setBuildCurrentTask("Build failed");
-      },
-    });
-    setBuildCurrentTask(prev => prev === "Initializing..." ? "" : prev);
+
+          // 🛠 ใช้ Wrapper เพื่อให้มันโหลด export.bat ก่อนสั่ง idf.py เสมอ
+          const flashArgs = ["build", "flash"];
+          if (selectedSerialPort) {
+            flashArgs.push("-p", selectedSerialPort);
+            addLog(`Using port: ${selectedSerialPort}`);
+          } else {
+            addLog("⚠️ No serial port selected — idf.py will use its default port");
+          }
+          await runBuildForBoard(selectedBoard, () =>
+            runIdfWrappedCommand("idf.py", flashArgs, projectDir)
+          );
+        },
+        setResult: setBuildResult,
+        setBuilding: setIsBuilding,
+        onFailure: (err) => {
+          addLog(`Build failed: ${err}`);
+          setBuildCurrentTask("Build failed");
+        },
+      });
+      setBuildCurrentTask(prev => prev === "Initializing..." ? "" : prev);
+    } finally { buildInProgressRef.current = false; }
   };
   // Keep ref in sync so the keyboard shortcut (Ctrl+Shift+B) always calls the latest version
   useEffect(() => { buildFlashRef.current = handleBuildFlash; });
@@ -1534,6 +1520,10 @@ function App({
           </div>
 
           <div className="p-2 text-sm font-medium mt-4" style={{ color: 'var(--text-muted)' }}>TOOLS</div>
+          <button onClick={() => setShowSimulator(true)} aria-label="Run project simulator"
+            className="w-full text-left p-2 rounded text-cyan-500 hover:bg-[var(--bg-hover)]">
+            ▶ Run Simulator
+          </button>
           <SetupRepairButton
             isInstalling={isSettingUpEspIdf}
             onClick={() => setShowSetupModal(true)}
@@ -1631,7 +1621,7 @@ function App({
             title={!isBuildFlashSupported(selectedBoard)
               ? MIUAI_DEPLOYMENT_UNAVAILABLE
               : !toolchainReady
-                ? "Waiting for toolchain download to complete..."
+                ? (isSettingUpEspIdf ? "Waiting for toolchain download to complete..." : "Install from Setup / Repair ESP-IDF when you want to flash a board")
                 : "Build & Flash (Ctrl+Shift+B)"}
             className="w-full justify-center text-sm px-4 py-2 rounded-lg transition-all duration-200 font-bold flex items-center gap-2 shadow-lg active:scale-[0.98]"
             style={isBuilding || !toolchainReady || !isBuildFlashSupported(selectedBoard)
@@ -1646,8 +1636,8 @@ function App({
               </>
             ) : !toolchainReady ? (
               <>
-                <div className="w-3 h-3 border-2 border-amber-700 border-t-amber-400 rounded-full animate-spin" />
-                Toolchain Loading...
+                {isSettingUpEspIdf && <div className="w-3 h-3 border-2 border-amber-700 border-t-amber-400 rounded-full animate-spin" />}
+                {isSettingUpEspIdf ? "Toolchain Loading..." : "Toolchain Required"}
               </>
             ) : (
               <>
@@ -1834,7 +1824,7 @@ function App({
                 value={activeFile.content}
                 onChange={handleEditorChange}
                 filePath={activeFile.path}
-                onSave={saveAllFiles}
+                onSave={() => { void saveAllFiles().catch(() => {}); }}
                 isDarkMode={darkMode}
                 gotoLineRequest={gotoLineRequest && normPath(gotoLineRequest.path) === normPath(activeFile.path) ? gotoLineRequest : null}
                 buildErrors={buildErrors}
@@ -2055,13 +2045,27 @@ function App({
       {showAiPanel && (
         <div className="w-96 relative flex flex-col" style={{ borderLeft: '1px solid var(--border-color)' }}>
           <AiChat
+            selectedBoard={selectedBoard}
             projectDir={projectDir}
             onInjectCode={(newCode) => updateActiveFileContent(newCode)}
             onApplyToFile={handleApplyToFile}
             sendApiRef={aiChatSendRef}
+            onOpenSimulator={() => setShowSimulator(true)}
           />
         </div>
       )}
+
+      {showSimulator && <SimulatorPanel key={projectDir} projectDir={projectDir}
+        activeName={activeFile?.name} activeSource={activeFile?.content}
+        initialSource={simulationDrafts[projectDir]}
+        onDraftChange={source => setSimulationDrafts(previous => ({ ...previous, [projectDir]: source }))}
+        beforeProjectRun={async () => { try { await saveAllFiles(); return true; } catch { return false; } }}
+        onReviewFile={async path => {
+            await handleFileClick(path);
+            setShowSimulator(false);
+            window.dispatchEvent(new CustomEvent("vibe-review-diff", { detail: { path } }));
+          }}
+          onClose={() => setShowSimulator(false)} />}
 
       {/* New Project Modal */}
       {showNewProjectModal && (
@@ -2218,11 +2222,18 @@ function App({
                 <span className="text-[10px] text-neutral-500 bg-neutral-700 px-1.5 py-0.5 rounded">GitHub Release (~2.28 GB)</span>
               </div>
               <p className="text-[11px] text-neutral-500 mb-3">
-                ดาวน์โหลด <code className="text-neutral-400">frameworks.zip</code> + <code className="text-neutral-400">tools.zip</code> จาก GitHub Release แล้วแตกไฟล์ลง AppData โดยอัตโนมัติ (ครั้งเดียว)
+                ดาวน์โหลด <code className="text-neutral-400">frameworks.zip</code> + <code className="text-neutral-400">tools.zip</code> จาก GitHub Release แล้วแตกไฟล์ลงตำแหน่งที่เลือก (ครั้งเดียว)
               </p>
+              <ToolchainStoragePicker storage={storage} disabled={isSettingUpEspIdf} />
               <button
-                onClick={() => { setShowSetupModal(false); handleAutoInstallGithub(); }}
-                disabled={isSettingUpEspIdf}
+                onClick={async () => {
+                  try {
+                    const installDir = await storage.prepare();
+                    setShowSetupModal(false);
+                    await handleAutoInstallGithub(installDir);
+                  } catch (err) { toast(String(err), "error"); }
+                }}
+                disabled={isSettingUpEspIdf || !storage.ready}
                 className="w-full py-2 bg-red-600 hover:bg-red-500 text-sm font-bold text-white rounded-lg transition-all active:scale-95 shadow-lg shadow-red-500/20"
               >
                 {isSettingUpEspIdf ? "⏳ Downloading from GitHub..." : "⬇️ Start Auto Install (GitHub)"}

@@ -2,7 +2,24 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
+import EditorWorker from "monaco-editor/editor/editor.worker?worker";
+import JsonWorker from "monaco-editor/language/json/json.worker?worker";
+import CssWorker from "monaco-editor/language/css/css.worker?worker";
+import HtmlWorker from "monaco-editor/language/html/html.worker?worker";
+import TypeScriptWorker from "monaco-editor/language/typescript/ts.worker?worker";
 import App from "./App";
+
+// Workers must load from bundled files under the app's existing CSP. Monaco's
+// default data-URL bootstrap cannot resolve its relative ESM imports here.
+self.MonacoEnvironment = {
+  getWorker(_moduleId, label) {
+    if (label === "json") return new JsonWorker();
+    if (["css", "scss", "less"].includes(label)) return new CssWorker();
+    if (["html", "handlebars", "razor"].includes(label)) return new HtmlWorker();
+    if (["typescript", "javascript"].includes(label)) return new TypeScriptWorker();
+    return new EditorWorker();
+  },
+};
 import "./index.css";
 
 // Configure @monaco-editor/react to use local bundled monaco instance

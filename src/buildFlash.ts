@@ -19,6 +19,7 @@ export async function runBuildForBoard(
 }
 
 interface BuildLifecycle {
+  save?: () => Promise<unknown>;
   run: () => Promise<unknown>;
   setResult: (result: BuildResult) => void;
   setBuilding: (building: boolean) => void;
@@ -27,6 +28,7 @@ interface BuildLifecycle {
 
 /** Keep the UI in the building state until the backend process actually exits. */
 export async function executeBuildLifecycle({
+  save,
   run,
   setResult,
   setBuilding,
@@ -36,6 +38,7 @@ export async function executeBuildLifecycle({
   setResult("building");
 
   try {
+    await save?.();
     await run();
     setResult("success");
   } catch (error) {

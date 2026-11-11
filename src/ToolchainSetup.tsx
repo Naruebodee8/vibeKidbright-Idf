@@ -3,28 +3,33 @@
 //
 // แสดงผลตอนเปิดแอปครั้งแรก หรือเมื่อ toolchain หายไป
 // หน้าจอจะหายไปอัตโนมัติเมื่อ download + extract เสร็จสมบูรณ์
-// การติดตั้งไม่สามารถยกเลิกได้ — บังคับให้เสร็จสมบูรณ์
+// Simulator can run before the board toolchain installation.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { ToolchainStoragePicker, useToolchainStorage } from "./ToolchainStorage";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface ToolchainProgress {
-  stage: "downloading" | "extracting" | "done" | "error";
+  stage: "downloading" | "extracting" | "done" | "error" | "cancelled";
   percent: number;
   message: string;
 }
 
 interface ToolchainStatus {
-  status: "ready" | "not_installed";
+  status: "ready" | "not_installed" | "needs_repair";
+  platform?: string;
+  message?: string;
   version: string | null;
   path: string | null;
 }
 
 interface Props {
+  autoInstall?: boolean;
+  onDefer?: () => void;
   /** เรียกเมื่อ toolchain พร้อมใช้งาน (ติดตั้งใหม่หรือมีอยู่แล้ว) */
   onReady: () => void;
   /** URL ที่จะใช้ดาวน์โหลด ZIP (optional — ถ้าว่างจะใช้ default ใน Rust) */
@@ -40,6 +45,8 @@ interface Props {
 
 export default function ToolchainSetup({
   onReady,
+  autoInstall = true,
+  onDefer,
   toolchainUrl,
   mini = false,
   isInstalling,
@@ -75,7 +82,8 @@ export default function ToolchainSetup({
   // Auto-start countdown (ไม่สามารถยกเลิกได้)
   const [countdown, setCountdown] = useState<number | null>(null);
   // Mini widget state
-  const [miniExpanded, setMiniExpanded] = useState(false);
+  const [miniExpanded, setMiniExpanded] = useState(!autoInstall);
+  const storage = useToolchainStorage(checkDone && progress.stage !== "done" && !isDownloading);
 
   // ── Scroll logs to bottom ────────────────────────────────────────────────
   useEffect(() => {
@@ -116,6 +124,7 @@ export default function ToolchainSetup({
     try {
       const status = (await invoke("check_toolchain")) as ToolchainStatus;
       setCheckDone(true);
+      setErrorMsg(status.message || "");
 
       if (status.status === "ready") {
         // Toolchain มีอยู่แล้ว → ผ่านไฟเลย
@@ -123,7 +132,8 @@ export default function ToolchainSetup({
         notifyReady();
       } else {
         // not_installed → เริ่ม auto-countdown 5 วินาที (ไม่สามารถยกเลิกได้)
-        setCountdown(5);
+        setCountdown(autoInstall ? 5 : null);
+        if (!autoInstall) setProgress({ stage: "downloading", percent: 0, message: "เลือกติดตั้งสำหรับลงบอร์ด หรือใช้ Simulator ก่อนได้" });
       }
     } catch (err) {
       setCheckDone(true);
@@ -141,14 +151,18 @@ export default function ToolchainSetup({
 
   const startDownload = async () => {
     if (isDownloading) return;
+    setCountdown(null);
     setErrorMsg("");
     setIsDownloading(true);
     setLogs([]);
     setProgress({ stage: "downloading", percent: 0, message: "Starting download..." });
 
     try {
+      const installDir = await storage.prepare();
+      setLogs(prev => [...prev, "SDK destination: " + installDir]);
       await invoke("download_toolchain", {
         url: customUrl.trim() || null,
+        installDir,
       });
       setIsDownloading(false);
       await checkToolchain(); // Also handles a missed progress event.
@@ -164,8 +178,9 @@ export default function ToolchainSetup({
 
   const repairPaths = async () => {
     setIsRepairing(true);
+    setIsDownloading(true);
     setErrorMsg("");
-    setLogs(prev => [...prev, "[REPAIR] Patching Python venv paths..."]);
+    setLogs(prev => [...prev, "[REPAIR] Verifying and repairing the installed SDK..."]);
     try {
       const result = await invoke("repair_toolchain_paths") as string;
       setLogs(prev => [...prev, `[REPAIR] ${result}`]);
@@ -177,6 +192,7 @@ export default function ToolchainSetup({
       setLogs(prev => [...prev, `[REPAIR ERROR] ${msg}`]);
     } finally {
       setIsRepairing(false);
+      setIsDownloading(false);
     }
   };
 
@@ -202,9 +218,10 @@ export default function ToolchainSetup({
   // MINI WIDGET MODE (bottom-left floating)
   // ─────────────────────────────────────────────────────────────────────────
   if (mini) {
-    const shortMsg = progress.message.length > 50
-      ? progress.message.slice(0, 47) + "..."
-      : progress.message;
+    const headerMessage = errorMsg || progress.message;
+    const shortMsg = headerMessage.length > 50
+      ? headerMessage.slice(0, 47) + "..."
+      : headerMessage;
 
     return (
       <div
@@ -221,7 +238,8 @@ export default function ToolchainSetup({
           backdropFilter: "blur(20px)",
           fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif",
           transition: "width 0.3s ease, box-shadow 0.3s ease",
-          overflow: "hidden",
+          overflow: "auto",
+          maxHeight: "calc(100vh - 32px)",
         }}
       >
         <style>{`
@@ -265,10 +283,10 @@ export default function ToolchainSetup({
                 : isError ? "Setup Error"
                 : isReady ? "Toolchain Ready!"
                 : countdown !== null ? `Auto-installing in ${countdown}s...`
-                : "Setting up toolchain"}
+                : "Toolchain สำหรับ Build/Flash"}
             </div>
             <div style={{ fontSize: "10px", color: "rgba(148,163,184,0.7)", marginTop: "1px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {shortMsg}
+              <span title={headerMessage}>{shortMsg}</span>
             </div>
           </div>
 
@@ -306,6 +324,7 @@ export default function ToolchainSetup({
         {/* Expanded section: logs + actions */}
         {miniExpanded && (
           <div style={{ padding: "0 12px 12px", borderTop: "1px solid rgba(59,130,246,0.1)" }}>
+            {isError && errorMsg && <p role="alert" style={{ marginTop: "10px", color: "#fecaca", fontSize: "11px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: "180px", overflowY: "auto" }}>{errorMsg}</p>}
             {/* Mandatory notice */}
             {!isReady && !isError && (
               <div style={{
@@ -317,7 +336,8 @@ export default function ToolchainSetup({
                 fontSize: "10px",
                 color: "rgba(148,163,184,0.7)",
               }}>
-                🔒 การติดตั้ง toolchain เป็นขั้นตอนบังคับ กรุณารอจนเสร็จสมบูรณ์
+                ใช้สำหรับ Build/Flash บอร์ด · Simulator ทดลองได้โดยยังไม่ติดตั้ง
+                {!isDownloading && <p>ดาวน์โหลดประมาณ 2.3 GB และต้องมีพื้นที่เพิ่มสำหรับแตกไฟล์</p>}
               </div>
             )}
 
@@ -361,11 +381,19 @@ export default function ToolchainSetup({
               </button>
             )}
 
+            {!isReady && <ToolchainStoragePicker storage={storage} disabled={isDownloading} />}
+            {!isDownloading && !isReady && checkDone && !autoInstall && (
+              <div className="mt-3 space-y-2">
+                <button aria-label="Install board toolchain" disabled={!storage.ready} className="w-full p-2 rounded bg-blue-700 text-white text-xs"
+                  onClick={() => { setCountdown(null); void startDownload(); }}>ติดตั้งสำหรับลงบอร์ด</button>
+                {onDefer && <button className="w-full p-2 rounded border border-slate-600 text-slate-200 text-xs" onClick={onDefer}>ใช้ Simulator ก่อน</button>}
+              </div>
+            )}
             {/* Start now button (before download starts) */}
             {!isDownloading && !isReady && !isError && countdown !== null && (
               <button
                 onClick={() => { setCountdown(null); startDownload(); }}
-                disabled={!checkDone}
+                disabled={!checkDone || !storage.ready}
                 style={{
                   width: "100%", padding: "7px", borderRadius: "8px", border: "none",
                   background: checkDone ? "linear-gradient(135deg, #1d4ed8, #3b82f6)" : "rgba(30,40,60,0.5)",
@@ -511,11 +539,13 @@ export default function ToolchainSetup({
           }}>
             <span style={{ fontSize: "16px", flexShrink: 0 }}>🔒</span>
             <p style={{ fontSize: "12px", color: "rgba(148,163,184,0.7)", margin: 0, lineHeight: 1.5 }}>
-              การติดตั้ง Toolchain เป็น<strong style={{ color: "#93c5fd" }}> ขั้นตอนบังคับ</strong> ที่จำเป็นต้องทำก่อนใช้งานโปรแกรม
-              กรุณารอจนกว่าการติดตั้งจะเสร็จสมบูรณ์ (~1 GB · ครั้งเดียวเท่านั้น)
+              การติดตั้ง Toolchain เป็น<strong style={{ color: "#93c5fd" }}> ขั้นตอนสำหรับลงบอร์ด</strong> ส่วน Simulator ทดลองได้ก่อน
+              กรุณารอจนกว่าการติดตั้งจะเสร็จสมบูรณ์ (ดาวน์โหลดประมาณ 2.3 GB และมีขั้นตอนแตกไฟล์ต่อ)
             </p>
           </div>
         )}
+
+        {!isReady && <ToolchainStoragePicker storage={storage} disabled={isDownloading} />}
 
         {/* Progress Section (shown during download or when done) */}
         {(isDownloading || isReady || isError) && (
@@ -721,7 +751,7 @@ export default function ToolchainSetup({
               <button
                 id="btn-start-download"
                 onClick={() => { setCountdown(null); startDownload(); }}
-                disabled={!checkDone}
+                disabled={!checkDone || !storage.ready}
                 style={{
                   width: "100%",
                   padding: "14px",

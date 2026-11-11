@@ -1,3 +1,4 @@
+import { toolResultFailed, toolResultErrorMessage } from "./toolResult";
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -7,7 +8,8 @@ interface Message {
     id: string;
     role: "user" | "assistant";
     content: string;
-    toolCalls?: { name: string; result?: string }[];
+    toolCalls?: { name: string; result?: string; failed?: boolean; retryResolved?: boolean }[];
+    generationCheck?: string;
 }
 
 interface ChatSession {
@@ -49,11 +51,12 @@ function ApplyButton({ onApply, targetFile }: { onApply: () => void, targetFile?
 }
 
 
-function AiChat({ projectDir, onInjectCode, onApplyToFile, sendApiRef }: { projectDir: string, onInjectCode: (code: string) => void, onApplyToFile?: (filePath: string, code: string) => void, sendApiRef?: { current: ((text: string) => void) | null } }) {
+function AiChat({ selectedBoard = "kidbright32", projectDir, onInjectCode, onApplyToFile, sendApiRef, onOpenSimulator }: { selectedBoard?: "kidbright32" | "miuaiplus", projectDir: string, onOpenSimulator?: () => void, onInjectCode: (code: string) => void, onApplyToFile?: (filePath: string, code: string) => void, sendApiRef?: { current: ((text: string) => void) | null } }) {
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState("");
     const [isLoading, setIsLoading] = useState(false);
     const [streamingText, setStreamingText] = useState("");
+    const streamingTextRef = useRef("");
     const [activeTools, setActiveTools] = useState<string[]>([]);
     const [showSettings, setShowSettings] = useState(false);
     const [showHistory, setShowHistory] = useState(false);
@@ -158,7 +161,8 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, sendApiRef }: { proje
         });
 
         const unlistenDelta = listen("ai-chat-delta", (event) => {
-            setStreamingText((prev) => prev + (event.payload as string));
+            streamingTextRef.current += event.payload as string;
+            setStreamingText(streamingTextRef.current);
         });
 
         const unlistenToolStart = listen("ai-chat-tool-start", (event) => {
@@ -173,14 +177,25 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, sendApiRef }: { proje
             setMessages((prev) => {
                 const last = prev[prev.length - 1];
                 if (last && last.role === "assistant") {
-                    const toolResult = typeof data.result === 'string'
+                    const failed=toolResultFailed(data.result);
+                    const toolResult = failed ? toolResultErrorMessage(data.result) : typeof data.result === 'string'
                         ? data.result
                         : JSON.stringify(data.result);
 
                     const updated = { ...last };
+                    const calls = [...(updated.toolCalls || [])];
+                    // A successful generation retry resolves earlier failures of
+                    // that tool in this message/workspace, retaining their detail.
+                    if (!failed && ["generate_device_program", "generate_simulation"].includes(data.name)) {
+                        for (let i = calls.length - 1; i >= 0; i--) {
+                            const call = calls[i];
+                            if (call.name === "create_project_workspace" || (call.name === data.name && !call.failed)) break;
+                            if (call.name === data.name && call.failed) calls[i] = { ...call, retryResolved: true };
+                        }
+                    }
                     updated.toolCalls = [
-                        ...(updated.toolCalls || []),
-                        { name: data.name, result: toolResult.substring(0, 500) },
+                        ...calls,
+                        { name: data.name, result: toolResult.substring(0, 500), failed },
                     ];
                     return [...prev.slice(0, -1), updated];
                 }
@@ -188,6 +203,14 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, sendApiRef }: { proje
             });
         });
 
+        const unlistenCheck = listen("ai-generation-check", event => {
+            const data=JSON.parse(event.payload as string);
+            const names:Record<string,string>={matrix:"LED Matrix",temperature:"อุณหภูมิ",light:"แสง",s1:"SW1",s2:"SW2",input1:"IN1",input2:"IN2",input3:"IN3",input4:"IN4",analog1:"Analog IN1",analog2:"Analog IN2",analog3:"Analog IN3",analog4:"Analog IN4",out1:"OUT1",out2:"OUT2",usb:"USB",buzzer:"Buzzer",volume:"ระดับเสียง",matrix_idle:"สถานะจอ"};
+            const features=(data.features || []).map((feature:string)=>names[feature] || feature).join(", ");
+            const missingNames:Record<string,string>={servo:"เซอร์โว",pwm:"PWM",wifi:"Wi-Fi",bluetooth:"Bluetooth",rtc:"RTC",accelerometer:"ความเร่ง",analog_input:"อินพุตแอนะล็อก",parallel_tasks:"งานหลาย task",network:"เครือข่าย"};
+            const missing=(data.capabilities || []).map((capability:string)=>missingNames[capability] || capability).join(", ");
+            setMessages(prev=>prev.map(message=>message.id===data.messageId ? {...message,generationCheck:data.validation === "scaffold_only" ? "สร้างเฉพาะโครงโปรเจกต์แล้ว · ยังไม่มีโปรแกรมหรือไฟล์ซิมพร้อมใช้งาน รอข้อมูลหรือขั้นตอนสร้างโค้ดต่อ" : data.validation === "unsupported" ? `มีไฟล์เฟิร์มแวร์ให้ตรวจแล้ว · ซิมยังไม่รองรับ: ${missing} · ยังรันซิมงานนี้ไม่ได้ และยังไม่ได้ทดสอบ Build/บอร์ดจริง` : data.validation === "shared_behavior" ? `สร้าง C/JS จากพฤติกรรมเดียวกัน: ${features} · ยังไม่ได้ทดสอบ Build/บอร์ดจริง` : data.validation === "revision_only" ? "จับคู่เวอร์ชัน firmware/ซิมแล้ว · ยังไม่ได้ยืนยันพฤติกรรมหรือ Build" : `ตรวจช่องพัดลม ${String(data.fan).toUpperCase()} ตรงกันแล้ว · ยังไม่ได้ทดสอบ Build/บอร์ดจริง`} : message));
+        });
         const unlistenDone = listen("ai-chat-done", (event) => {
             const data = (() => { try { return JSON.parse(event.payload as string); } catch { return {}; } })();
             // Capture the full API-level history (including tool_calls sequences) returned
@@ -195,35 +218,33 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, sendApiRef }: { proje
             if (data.history && Array.isArray(data.history)) {
                 setConversationHistory(data.history);
             }
-            setStreamingText((prev) => {
-                setMessages((msgs) => {
-                    const last = msgs[msgs.length - 1];
-                    if (last && last.role === "assistant") {
-                        return [
-                            ...msgs.slice(0, -1),
-                            { ...last, content: prev },
-                        ];
-                    }
-                    return [...msgs, { id: crypto.randomUUID(), role: "assistant", content: prev }];
-                });
-                return "";
+            const completedText = streamingTextRef.current || (typeof data.text === "string" ? data.text : "");
+            streamingTextRef.current = "";
+            setStreamingText("");
+            setMessages((msgs) => {
+                const last = msgs[msgs.length - 1];
+                if (last && last.role === "assistant") {
+                    return [...msgs.slice(0, -1), { ...last, content: completedText }];
+                }
+                return [...msgs, { id: crypto.randomUUID(), role: "assistant", content: completedText }];
             });
             setIsLoading(false);
             setActiveTools([]);
         });
 
         const unlistenError = listen("ai-chat-error", (event) => {
+            const explanation = streamingTextRef.current;
             setIsLoading(false);
+            streamingTextRef.current = "";
             setStreamingText("");
             setActiveTools([]);
-            setMessages((prev) => [
-                ...prev,
-                {
-                    id: crypto.randomUUID(),
-                    role: "assistant",
-                    content: `❌ Error: ${event.payload as string}`,
-                },
-            ]);
+            setMessages((prev) => {
+                const last = prev[prev.length - 1];
+                const explained = explanation && last?.role === "assistant"
+                    ? [...prev.slice(0, -1), { ...last, content: explanation }]
+                    : explanation ? [...prev, { id: crypto.randomUUID(), role: "assistant" as const, content: explanation }] : prev;
+                return [...explained, { id: crypto.randomUUID(), role: "assistant", content: `❌ Error: ${event.payload as string}` }];
+            });
         });
 
         return () => {
@@ -232,6 +253,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, sendApiRef }: { proje
             unlistenToolStart.then((f) => f());
             unlistenToolResult.then((f) => f());
             unlistenDone.then((f) => f());
+            unlistenCheck.then((f) => f());
             unlistenError.then((f) => f());
         };
     }, []);
@@ -373,6 +395,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, sendApiRef }: { proje
         setMessages(newMessages);
         setInput("");
         setIsLoading(true);
+        streamingTextRef.current = "";
         setStreamingText("");
 
         // Add empty assistant message placeholder
@@ -388,7 +411,7 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, sendApiRef }: { proje
         } else {
             let systemContext = `[CURRENT PROJECT STATE: You are working in '${projectDir}'. `;
             systemContext += `Always rely on explicitly declared variables. DO NOT invent macros. PROJECT RULE: A workspace is ALREADY OPEN. Edit files in this current project directly (read_file -> write_file on main/main.c etc.). Do NOT call 'create_project_workspace' and do NOT create a new project UNLESS the user explicitly asks to create/start a new project. If the user explicitly asks for a new project, call 'create_project_workspace' FIRST, then write the code.]\n\n`;
-            userContent = `${systemContext}${userContent}\n\n[CRITICAL REMINDER: If the user asks you to fix, check, or write code, you MUST use the \`read_file\` or \`write_file\` tool IMMEDIATELY. DO NOT just apologize or explain what you will do. Execute the tool NOW.]`;
+            userContent = `${systemContext}${userContent}\n\n[CRITICAL REMINDER: Complete the requested code with tools. For a fresh supported project, automatically create the companion with generate_device_program after create_project_workspace. For custom firmware, use read_file/write_file and generate_simulation while preserving unrelated behavior. Do not only describe code or leave Hello firmware.]`;
         }
         const newUserApiMsg = { role: "user", content: userContent };
         const apiMessages = [...conversationHistory, newUserApiMsg];
@@ -397,7 +420,11 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, sendApiRef }: { proje
             await invoke("send_ai_message", {
                 messages: apiMessages,
                 projectDir,
-                messageId
+                messageId,
+                simulationEnabled: true,
+                userRequest: textToSend,
+                hardwareTarget: null,
+                selectedBoard
             });
         } catch (err) {
             setIsLoading(false);
@@ -695,6 +722,11 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, sendApiRef }: { proje
                         </svg>
                     </button>
                 </div>
+            </div>
+
+            <div className="px-3 py-2 flex items-center gap-2 text-xs" style={{ borderBottom: '1px solid var(--border-color)' }}>
+                <span className="flex-1">สร้างไฟล์ Simulator คู่กับเฟิร์มแวร์อัตโนมัติ</span>
+                <button onClick={onOpenSimulator} aria-label="Open simulator from chat" className="text-cyan-500">Run Sim</button>
             </div>
 
             {/* History Modal */}
@@ -1196,13 +1228,18 @@ function AiChat({ projectDir, onInjectCode, onApplyToFile, sendApiRef }: { proje
                                     {msg.toolCalls?.map((tc, j) => (
                                         <div
                                             key={j}
-                                            className="flex items-center gap-2 text-xs mb-2 rounded-lg px-2 py-1.5" style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--text-muted)' }}
+                                            className="min-w-0 text-xs mb-2 rounded-lg px-2 py-1.5" style={{ backgroundColor: 'var(--bg-hover)', color: 'var(--text-muted)' }}
                                         >
-                                            <span className="text-emerald-400">⚡</span>
-                                            <span className="font-mono">{tc.name}</span>
-                                            <span className="text-neutral-600">✓</span>
+                                            <div className="flex min-w-0 items-center gap-2">
+                                                <span className={tc.retryResolved ? "text-amber-400" : tc.failed ? "text-red-400" : "text-emerald-400"}>⚡</span>
+                                                <span className="min-w-0 flex-1 truncate font-mono" title={tc.name}>{tc.name}</span>
+                                                <span className="shrink-0" aria-label={tc.retryResolved ? "Tool retry succeeded" : tc.failed ? "Tool failed" : "Tool completed"}>{tc.retryResolved ? "↻" : tc.failed ? "✗" : "✓"}</span>
+                                            </div>
+                                            {tc.retryResolved && <p className="mt-2 font-medium" style={{ color: 'var(--text-primary)' }}>ลองใหม่สำเร็จแล้ว · ข้อความด้านล่างคือข้อผิดพลาดครั้งก่อน</p>}
+                                            {tc.failed && <p role={tc.retryResolved ? undefined : "alert"} className="mt-2 whitespace-pre-wrap break-words" style={{ color: 'var(--text-primary)' }}>{toolResultFailed(tc.result) ? toolResultErrorMessage(tc.result) : tc.result}</p>}
                                         </div>
                                     ))}
+                                    {msg.generationCheck && <p role="status" className="text-xs mb-2">{msg.generationCheck}</p>}
                                     <div className="prose-sm">{renderMarkdown(msg.content)}</div>
                                 </>
                             ) : (

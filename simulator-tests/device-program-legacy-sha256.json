@@ -1,0 +1,97 @@
+[
+  {
+    "name": "temperature_to_matrix_negative_and_rounding",
+    "firmware_sha256": "d5e61260f57ebcafaacc61f88a4639242c212ef9de9e305779c614cf1bf484ac",
+    "source_sha256": "0a1450334d4f6e7f6c5cecc572276fe0fb000c95ccb86f070bc429bcf590a14b"
+  },
+  {
+    "name": "light_threshold_controls_usb_and_out2",
+    "firmware_sha256": "90d2f51285a129c9bc3590335a65b108145e953b83a33d31d60968132e532679",
+    "source_sha256": "26884ff0685e3b760d7ca523d69b2eb46356f8e8be76ce102122d2b82dc2cca3"
+  },
+  {
+    "name": "two_buttons_and_all_four_digital_inputs",
+    "firmware_sha256": "4ed53ba5d8c2300d4e35cb80b85acc0dbe7170b1c890901dbc1efa1989c5d778",
+    "source_sha256": "cbb997340b6fce8bb83c4d2e809a248d8ae8e81bf7c0afc461c5cbf47def66e6"
+  },
+  {
+    "name": "usb_sw1_toggle_edge_and_release",
+    "firmware_sha256": "225d383ad03638a69c48d5cec17d872fcf2a81d60ee0056ad3ec41b3838445bc",
+    "source_sha256": "3f37b5f824dca78e1620f0f3fb670e88543157abb8954ba3336a2a6f007b0c22"
+  },
+  {
+    "name": "ascii_upper_lower_punctuation_and_clear",
+    "firmware_sha256": "d74101cbb7778eceaa9d4ae7acfab837a43354b768b92f71b25ffba93ab6fdda",
+    "source_sha256": "d76745ec368c0fde2e8456156bb66515d2443f3fce53332ede5dd2f5752fe381"
+  },
+  {
+    "name": "scroll_right_to_left_with_readable_e",
+    "firmware_sha256": "d00854aa1b74c91d7c2d605cea0953bc88f520abfbda2ddb37d09c779b6d6f0d",
+    "source_sha256": "881723256c63dc0254137f4edc566089932112626cb8dfd0e096a26d194f5c21"
+  },
+  {
+    "name": "all_ascii_glyphs",
+    "firmware_sha256": "836839d1d0e909667cb0f1943d5a699ab26185644e3744f0fa765732baf0ccbb",
+    "source_sha256": "4ed8605dceb2bacde9f7dc3684bf5e13d98257f28093f77db9ffa26fffca98c4"
+  },
+  {
+    "name": "bitmap_corners_and_mirror_pattern",
+    "firmware_sha256": "883dd4e17c2bdc9cb168325c2d9dfcfe92d0d6674239a2e71cfe0cf5d1d80bb9",
+    "source_sha256": "ff2b0601a2b8bdc3146280e912a49389665e8364ae9aa1cf104d667b38b48a0b"
+  },
+  {
+    "name": "buzzer_notes_and_limits",
+    "firmware_sha256": "56ca7650c40a4be55ac36adcf087baea13b73497f6f6f667dfd27c23bd56ff12",
+    "source_sha256": "e5590a23395fc12a8eeaf0c8ffc76be51205b2ca274611cb356b3e67743c2b8a"
+  },
+  {
+    "name": "tone_can_overlap_led_ports_and_sensors",
+    "firmware_sha256": "d58b6412925d433d5ffe7acb4e1d71349404c87f8db9fdd9913408b40117f5f2",
+    "source_sha256": "b8cb321e62702155ae9ec853d2bf4652262527268113f388e0e26ba31fcbe3d8"
+  },
+  {
+    "name": "short_circuit_and_operand_evaluation_order",
+    "firmware_sha256": "d1de69cd736bb86a9b7e9d357845e3f5f5963cfd5bd55e6542e04ee9a02cde91",
+    "source_sha256": "b120dbd4d276639d888b80c2065d0ffb9b92d761d1ee892264acb24a707b6957"
+  },
+  {
+    "name": "nested_while_repeat_break_and_output_readback",
+    "firmware_sha256": "007511cf3bcfb41ca3cbda85eea30d7486e5118955257c4deeacaac52f639aae",
+    "source_sha256": "318c4f556aafdaa0a4952a1aff38282bf359fbcc4519ab5567818a5ad52a16e5"
+  },
+  {
+    "name": "all_peripherals_one_program",
+    "firmware_sha256": "4fe04b4b68a981c47d1188ccfa942f2a1f94674f12d9b009abb865061094ecc0",
+    "source_sha256": "c591b0507936664283394fe980a3505a11671edcfa146f267918d311c03d4809"
+  },
+  {
+    "name": "nonfinite_output_is_rejected",
+    "firmware_sha256": "07ba664d86519ac61ff22092e5f97a5f6d6289d26dd7fc0fc7475c0e9d0a0518",
+    "source_sha256": "a669d57f49545b4d7ff1c5d3479324821999c153b1d7478cfdb392c4f1e8a16f"
+  },
+  {
+    "name": "out_of_range_character_is_rejected",
+    "firmware_sha256": "5d037a5e6063b275266c01eb6e17520c53040cf0aaa38836917cb54e99fbe91e",
+    "source_sha256": "d8dcf104ce6fef257c07a63e73b663d719226309fd6062b3f861c4010df23be7"
+  },
+  {
+    "name": "out_of_range_number_is_rejected",
+    "firmware_sha256": "391187c93b45b5734eac0f1ecf2f6f12186812312ff1bc6f73eb0b5730758b75",
+    "source_sha256": "dc8b6564869d3f520a37185cc3c692118fd7ec62d9eed913ef20517938c5226b"
+  },
+  {
+    "name": "runtime_tone_bounds_are_checked",
+    "firmware_sha256": "f59de601b6c96089106da1ce0fe298c373936cbb5546f1aa42f012b0fcd597ba",
+    "source_sha256": "f58877721daba9e1a49e20b02764db2ac54871c3ee27e7c26a530d4a941de7a9"
+  },
+  {
+    "name": "runtime_volume_bounds_are_checked",
+    "firmware_sha256": "703da1785efadcf317669b388819d89a46f56941dad386dc113c61099a31752a",
+    "source_sha256": "3248e2880aafb28e79489f97489e98aeff0254d76b93173b41d9ffd170076e70"
+  },
+  {
+    "name": "operators_truthiness_and_int32_boundaries",
+    "firmware_sha256": "0325c680942d6ad87fe7cb955675ce613a6dcc4a780dc085c32f1ebf8313d871",
+    "source_sha256": "3d2d762747bcd7208f2206e8d39bba07855f07cc8eccc1da6c8130ba35f95510"
+  }
+]

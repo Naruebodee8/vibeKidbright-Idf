@@ -1,6 +1,19 @@
 mod esp_idf;
+#[cfg(any(target_os = "macos", test))]
+mod macos_idf;
+mod simulator;
+mod simulation_paths;
+mod simulation_project;
+mod simulation_compiler;
+mod fan_recipe;
+mod device_program;
+mod hardware_contract;
+mod simulation_validation;
 mod ai_chat;
+mod pending_diff;
 mod toolchain;
+mod toolchain_download_progress;
+mod toolchain_storage;
 mod kb_store;   // SQLite vector store for RAG
 mod kb_embed;   // Local ONNX embedding (fastembed, offline)
 mod ai;         // Modular AI subsystem structure (refactoring roadmap)
@@ -12,6 +25,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            app.manage(simulator::SimulatorState::default());
             app.manage(ai_chat::AiAbortState(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))));
             app.manage(ai_chat::AiBackupState::default());
             // Sanitize config.json on startup (moves legacy plaintext keys to OS Keychain)
@@ -40,6 +54,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            simulator::start_simulator_host,
+            simulator::stop_simulator_host,
+            simulator::export_simulator_source,
+            simulation_project::load_project_simulation,
+            hardware_contract::get_hardware_target,
             esp_idf::check_esp_idf,
             esp_idf::setup_esp_idf,
             esp_idf::run_idf_command,
@@ -91,8 +110,11 @@ pub fn run() {
             ai_chat::stop_ai_generation,
             ai_chat::undo_ai_changes,
             ai_chat::check_pending_diff,
+            ai_chat::list_pending_diffs,
+            ai_chat::restore_pending_diff_backup,
             ai_chat::accept_diff,
             ai_chat::reject_diff,
+            toolchain::get_toolchain_storage,
             toolchain::check_toolchain,
             toolchain::download_toolchain,
             toolchain::cancel_toolchain_download,

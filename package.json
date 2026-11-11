@@ -1,7 +1,7 @@
 {
   "name": "vibe-kidbright",
   "private": true,
-  "version": "3.7.1",
+  "version": "3.7.2",
   "type": "module",
   "engines": {
     "node": "^20.19.0 || >=22.12.0",
@@ -16,9 +16,12 @@
     "check:public": "node scripts/check-public.mjs",
     "check:bundle": "node scripts/check-public.mjs --bundle",
     "test": "vitest run",
+    "test:simulator": "node --test scripts/test-simulator.mjs",
+    "test:simulator:browser": "node scripts/smoke-simulator.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "check:hotfix": "node scripts/check-hotfix.mjs"
+    "check:hotfix": "node scripts/check-hotfix.mjs",
+    "test:device-program": "cargo build --locked --manifest-path src-tauri/Cargo.toml --example generate-device-program && node scripts/test-device-program.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

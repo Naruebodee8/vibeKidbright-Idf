@@ -10,7 +10,7 @@ use futures::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path,PathBuf};
 use std::sync::{atomic::Ordering, Arc, Mutex, OnceLock};
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager};
@@ -62,6 +62,58 @@ fn get_local_client() -> &'static Client {
 
 const MAX_TOOL_TURNS: u32 = 20;
 
+// Local file/generation errors must not consume another model's API quota just
+// because a project name happens to contain "429", "quota" or "not found".
+pub(crate) fn should_fallback(error:&str)->bool {
+    if crate::ai::workflow::completion_error_message(error).is_some(){return false;}
+    let lower=error.to_lowercase();
+    ["429","quota","rate limit","too many requests","overloaded","502","503","unavailable","provider error","404","not found"]
+        .iter().any(|needle|lower.contains(needle))
+}
+
+
+fn generation_completion_report(
+    project:&Path,
+    no_workspace:bool,
+    progress:&crate::ai::workflow::GenerationProgress,
+    requirements:crate::hardware_contract::Requirements,
+    unsupported:Option<&Value>,
+)->Result<Option<Value>,String>{
+    use crate::ai::workflow::GenerationCheck;
+    // Gate before any PathScope/firmware read. The project path can still refer
+    // to the old workspace after a refused creation or cancelled folder picker.
+    match progress.before_completion(no_workspace)? {
+        GenerationCheck::None=>return Ok(None),
+        GenerationCheck::ScaffoldOnly=>return Ok(Some(json!({
+            "validation":"scaffold_only","firmwareAvailable":false,"simulationReady":false,
+            "buildChecked":false,"physicalBoardChecked":false,
+        }))),
+        GenerationCheck::Validate=>{},
+    }
+    if requirements.fan.is_some(){
+        crate::hardware_contract::check(project,crate::hardware_contract::Requirements{
+            simulation:requirements.simulation&&unsupported.is_none(),..requirements
+        })?;
+    }
+    if requirements.simulation {
+        return crate::simulation_project::generation_outcome(project,unsupported).map(Some);
+    }
+    Ok(requirements.fan.map(|fan|json!({"fan":fan,"buildChecked":false})))
+}
+
+
+// A capability exception applies only to this turn and to the exact firmware inspected.
+// Any later generation attempt invalidates it, even if that tool subsequently fails.
+fn track_simulation_outcome(state: &mut Option<Value>, name: &str, input: &Value, result: &Value) {
+    if crate::hardware_contract::generation_tool(name, input) {
+        *state = None;
+    }
+    if name == "report_simulation_unsupported" {
+        *state = (result.get("error").is_none() && result["validation"] == "unsupported")
+            .then(|| result.clone());
+    }
+}
+
 // ── Conversation loop ─────────────────────────────────────────────────────────
 // D2: SYSTEM_PROMPT is now stored in ai/system_prompt.txt and loaded at compile
 // time via include_str!. This makes the prompt editable independently of the
@@ -72,6 +124,15 @@ pub(crate) const SYSTEM_PROMPT: &str = include_str!("system_prompt.txt");
 
 fn get_tools() -> Value {
     json!([
+        {"type":"function","function":{"name":"report_simulation_unsupported","description":crate::simulation_project::UNSUPPORTED_TOOL_DESCRIPTION,"parameters":{"type":"object","properties":{"capabilities":{"type":"array","items":{"type":"string","enum":crate::simulation_project::UNSUPPORTED_CAPABILITIES}}},"required":["capabilities"]}}},
+        {"type":"function","function":{"name":"read_device_program","description":"Read the current owned shared device behavior and hardware configuration without repeating firmware drivers/font. Use before follow-up edits, preserve all unrequested steps, then generate_device_program with the full updated program. Custom/manual firmware edits are protected; use read_file for those.","parameters":{"type":"object","properties":{}}}},
+        {"type":"function","function":{"name":"generate_device_program","description":crate::device_program::TOOL_DESCRIPTION,"parameters":{"type":"object","properties":{"program_json":{"type":"string","description":crate::simulation_compiler::PROGRAM_JSON_DESCRIPTION},"hardware_json":{"type":"string","description":"Optional explicit classic_reference wiring configuration; see simulator_paired_programs.md"}},"required":["program_json"]}}},
+        {"type":"function","function":{"name":"generate_fan_control","description":"Generate matching classic KidBright ESP-IDF main/main.c and (when enabled) simulator for SW1 toggling a selected fan port, debounce and Fan ON/OFF logs. Requires explicit USB/OUT1/OUT2 selection or request. Uses Keep/Undo. Only use if this complete recipe covers the request; do not erase unrelated behavior. Physical board revision must match the reference wiring.","parameters":{"type":"object","properties":{}}}},
+        {
+            "type":"function",
+            "function":{"name":"generate_simulation","description":crate::simulation_compiler::TOOL_DESCRIPTION,
+                "parameters":{"type":"object","properties":{"program_json":{"type":"string","description":crate::simulation_compiler::PROGRAM_JSON_DESCRIPTION}},"required":["program_json"]}}
+        },
         {
             "type": "function",
             "function": {
@@ -90,7 +151,7 @@ fn get_tools() -> Value {
             "type": "function",
             "function": {
                 "name": "write_file",
-                "description": "CRITICAL: You MUST use this tool to write or modify any code. DO NOT put code blocks in your chat response. Overwrites existing content.",
+                "description": "CRITICAL: You MUST use this tool to write or modify any code. DO NOT put code blocks in your chat response. For simulation/main.sim.js use generate_simulation instead. Overwrites existing content.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -280,7 +341,10 @@ pub(crate) async fn run_conversation_loop(
     message_id: Arc<str>,
     no_workspace: &mut bool,
     system_prompt: &str,
+    requirements: crate::hardware_contract::Requirements,
 ) -> Result<(), String> {
+    let mut generation_progress=crate::ai::workflow::GenerationProgress::default();
+    let mut unsupported_simulation: Option<Value> = None;
     // Detect local/LAN server early — affects client config, timeout, and encoding headers.
     // Covers: localhost, 127.x.x.x, 10.x.x.x, 172.16-31.x.x, 192.168.x.x, bare IP URLs.
     let is_local_url = {
@@ -742,7 +806,9 @@ pub(crate) async fn run_conversation_loop(
                     }
                 };
                 // FIX: pass &message_id — Arc<str> derefs to &str cleanly.
-                let result = execute_tool(app_handle, &tc.name, &input, project_path, &message_id, no_workspace).await;
+                let result = execute_tool(app_handle, &tc.name, &input, project_path, &message_id, no_workspace, requirements).await;
+                generation_progress.record(&tc.name,&input,&result);
+                track_simulation_outcome(&mut unsupported_simulation, &tc.name, &input, &result);
                 let _ = app_handle.emit(
                     "ai-chat-tool-result",
                     json!({ "name": tc.name, "id": tc.id, "result": &result }).to_string(),
@@ -775,6 +841,10 @@ pub(crate) async fn run_conversation_loop(
                     role: "assistant".to_string(),
                     content: json!(accumulated_text),
                 });
+            }
+            if let Some(mut report)=generation_completion_report(project_path,*no_workspace,&generation_progress,requirements,unsupported_simulation.as_ref()).map_err(crate::ai::workflow::local_completion_error)? {
+                report["messageId"]=json!(message_id.as_ref());report["fan"]=json!(requirements.fan);
+                let _=app_handle.emit("ai-generation-check",report.to_string());
             }
             let _ = app_handle.emit("ai-chat-done", json!({
                 "text": &accumulated_text,
@@ -860,14 +930,20 @@ fn build_google_contents(messages: &[ChatMessage]) -> Vec<Value> {
 fn get_google_tools() -> Value {
     json!([{
         "functionDeclarations": [
+            {"name":"report_simulation_unsupported","description":crate::simulation_project::UNSUPPORTED_TOOL_DESCRIPTION,"parameters":{"type":"OBJECT","properties":{"capabilities":{"type":"ARRAY","items":{"type":"STRING","enum":crate::simulation_project::UNSUPPORTED_CAPABILITIES}}},"required":["capabilities"]}},
+            {"name":"read_device_program","description":"Read owned shared device behavior and hardware configuration before follow-up edits. Preserve unrequested steps; custom/manual firmware is protected and must use read_file instead."},
+            {"name":"generate_device_program","description":crate::device_program::TOOL_DESCRIPTION,"parameters":{"type":"OBJECT","properties":{"program_json":{"type":"STRING","description":crate::simulation_compiler::PROGRAM_JSON_DESCRIPTION},"hardware_json":{"type":"STRING"}},"required":["program_json"]}},
+            {"name":"generate_fan_control","description":"Generate matching classic KidBright SW1 toggle fan firmware and optional simulation from the selected USB/OUT1/OUT2 plan. Includes debounce and Fan ON/OFF logs; uses Keep/Undo. Only use if this complete recipe covers the request; preserve unrelated behavior and verify board revision."},
+            {"name":"generate_simulation","description":crate::simulation_compiler::TOOL_DESCRIPTION,
+             "parameters":{"type":"OBJECT","properties":{"program_json":{"type":"STRING","description":crate::simulation_compiler::PROGRAM_JSON_DESCRIPTION}},"required":["program_json"]}},
             { "name": "read_file", "description": "Read file content. Always use this before editing a file.", "parameters": { "type": "OBJECT", "properties": { "path": { "type": "STRING", "description": "Path relative to project root" } }, "required": ["path"] } },
-            { "name": "write_file", "description": "CRITICAL: You MUST use this tool to write or modify any code. DO NOT put code blocks in your chat response. Overwrites existing content.", "parameters": { "type": "OBJECT", "properties": { "path": { "type": "STRING", "description": "Path relative to project root" }, "content": { "type": "STRING", "description": "The FULL complete new file content. DO NOT truncate or omit code." } }, "required": ["path", "content"] } },
+            { "name": "write_file", "description": "CRITICAL: You MUST use this tool to write or modify any code. DO NOT put code blocks in your chat response. For simulation/main.sim.js use generate_simulation instead. Overwrites existing content.", "parameters": { "type": "OBJECT", "properties": { "path": { "type": "STRING", "description": "Path relative to project root" }, "content": { "type": "STRING", "description": "The FULL complete new file content. DO NOT truncate or omit code." } }, "required": ["path", "content"] } },
             { "name": "list_files", "description": "List files in a directory.", "parameters": { "type": "OBJECT", "properties": { "path": { "type": "STRING" } }, "required": ["path"] } },
             { "name": "get_file_tree", "description": "Recursively list all files in the project as an indented tree.", "parameters": { "type": "OBJECT", "properties": { "max_depth": { "type": "INTEGER", "description": "Max depth (default 4)" } } } },
             { "name": "search_in_files", "description": "Search for a regex pattern across all source files. Returns matches with file path and line number.", "parameters": { "type": "OBJECT", "properties": { "pattern": { "type": "STRING" }, "file_extension": { "type": "STRING" } }, "required": ["pattern"] } },
             { "name": "diff_file", "description": "Preview a unified diff between the current file and proposed new content, without writing.", "parameters": { "type": "OBJECT", "properties": { "path": { "type": "STRING" }, "new_content": { "type": "STRING" } }, "required": ["path", "new_content"] } },
             { "name": "run_command", "description": "Run a shell command.", "parameters": { "type": "OBJECT", "properties": { "command": { "type": "STRING" } }, "required": ["command"] } },
-            { "name": "esp_idf_info", "description": "Get resolved ESP-IDF paths.", "parameters": { "type": "OBJECT", "properties": {} } },
+            { "name": "esp_idf_info", "description": "Get resolved ESP-IDF paths." },
             // FIX M2: install_idf_library was missing from Google tools — now parity with OpenAI tools.
             { "name": "install_idf_library", "description": "Install an ESP-IDF component dependency using idf.py add-dependency.", "parameters": { "type": "OBJECT", "properties": { "component": { "type": "STRING", "description": "Component identifier, e.g. espressif/led_strip or espressif/led_strip^2.5.3" } }, "required": ["component"] } },
             { "name": "web_search", "description": "Search the internet for technical docs.", "parameters": { "type": "OBJECT", "properties": { "query": { "type": "STRING" } }, "required": ["query"] } },
@@ -933,7 +1009,10 @@ pub(crate) async fn run_google_conversation_loop(
     message_id: Arc<str>,
     no_workspace: &mut bool,
     system_prompt: &str,
+    requirements: crate::hardware_contract::Requirements,
 ) -> Result<(), String> {
+    let mut generation_progress=crate::ai::workflow::GenerationProgress::default();
+    let mut unsupported_simulation: Option<Value> = None;
     // FIX H5: Use shared static HTTP client (get_cloud_client) instead of creating
     // a new Client per invocation. Creating a new Client per request causes socket
     // accumulation and progressively slower responses (same issue fixed in OpenAI loop).
@@ -1130,7 +1209,9 @@ pub(crate) async fn run_google_conversation_loop(
                     }
                 };
                 // FIX: &message_id derefs Arc<str> to &str cleanly.
-                let result = execute_tool(app_handle, &tc.name, &input, project_path, &message_id, no_workspace).await;
+                let result = execute_tool(app_handle, &tc.name, &input, project_path, &message_id, no_workspace, requirements).await;
+                generation_progress.record(&tc.name,&input,&result);
+                track_simulation_outcome(&mut unsupported_simulation, &tc.name, &input, &result);
                 let _ = app_handle.emit(
                     "ai-chat-tool-result",
                     json!({ "name": tc.name, "id": tc.id, "result": &result }).to_string(),
@@ -1157,6 +1238,10 @@ pub(crate) async fn run_google_conversation_loop(
                     role: "assistant".to_string(),
                     content: json!(accumulated_text),
                 });
+            }
+            if let Some(mut report)=generation_completion_report(project_path,*no_workspace,&generation_progress,requirements,unsupported_simulation.as_ref()).map_err(crate::ai::workflow::local_completion_error)? {
+                report["messageId"]=json!(message_id.as_ref());report["fan"]=json!(requirements.fan);
+                let _=app_handle.emit("ai-generation-check",report.to_string());
             }
             let _ = app_handle.emit("ai-chat-done", json!({
                 "text": &accumulated_text,
@@ -1230,4 +1315,192 @@ fn build_api_messages(system_prompt: &str, messages: &[ChatMessage], model: &str
         }
     }
     api_msgs
+}
+
+
+#[cfg(test)]
+mod simulator_tool_tests {
+    use super::*;
+    #[test]
+    fn both_provider_schemas_offer_checked_simulation_generation() {
+        let standard=get_tools();
+        for tool in [standard.as_array().unwrap().iter().find(|t|t["function"]["name"]=="report_simulation_unsupported").unwrap()["function"].clone(),
+                     get_google_tools()[0]["functionDeclarations"].as_array().unwrap().iter().find(|t|t["name"]=="report_simulation_unsupported").unwrap().clone()] {
+            assert_eq!(tool["parameters"]["required"],json!(["capabilities"]));
+            assert_eq!(tool["parameters"]["properties"]["capabilities"]["items"]["enum"],json!(crate::simulation_project::UNSUPPORTED_CAPABILITIES));
+        }
+        // Google FunctionDeclaration documents parameters as unset for no-arg functions.
+        let google_declarations=get_google_tools();
+        for name in ["read_device_program","generate_fan_control","esp_idf_info"]{
+            let tool=google_declarations[0]["functionDeclarations"].as_array().unwrap().iter().find(|tool|tool["name"]==name).unwrap();
+            assert!(tool.get("parameters").is_none());
+        }
+        assert!(standard.as_array().unwrap().iter().any(|tool|tool["function"]["name"]=="generate_device_program"));
+        assert!(get_google_tools()[0]["functionDeclarations"].as_array().unwrap().iter().any(|tool|tool["name"]=="generate_device_program"));
+        assert!(standard.as_array().unwrap().iter().any(|tool|tool["function"]["name"]=="generate_fan_control"));
+        assert!(get_google_tools()[0]["functionDeclarations"].as_array().unwrap().iter().any(|tool|tool["name"]=="generate_fan_control"));
+        let tool=standard.as_array().unwrap().iter().find(|t|t["function"]["name"]=="generate_simulation").unwrap();
+        assert_eq!(tool["function"]["parameters"]["required"],json!(["program_json"]));
+        let google=get_google_tools();
+        assert!(google[0]["functionDeclarations"].as_array().unwrap().iter().any(|t|t["name"]=="generate_simulation"));
+    }
+}
+
+#[cfg(test)]
+mod simulation_outcome_tracking_tests {
+    use super::*;
+    #[test]
+    fn unsupported_reports_are_native_turn_local_and_invalidated_by_later_writes() {
+        let mut state = None;
+        let report = json!({"validation":"unsupported","capabilities":["servo"]});
+        track_simulation_outcome(&mut state,"read_file",&json!({}),&report);
+        assert!(state.is_none());
+        track_simulation_outcome(&mut state,"report_simulation_unsupported",&json!({}),&report);
+        assert_eq!(state,Some(report.clone()));
+        track_simulation_outcome(&mut state,"read_file",&json!({}),&json!({}));
+        assert!(state.is_some());
+        track_simulation_outcome(&mut state,"write_file",&json!({"path":"main/main.c"}),&json!({"error":"failed"}));
+        assert!(state.is_none());
+        track_simulation_outcome(&mut state,"report_simulation_unsupported",&json!({}),&report);
+        track_simulation_outcome(&mut state,"report_simulation_unsupported",&json!({}),&json!({"error":"invalid capability"}));
+        assert!(state.is_none());
+        track_simulation_outcome(&mut state,"report_simulation_unsupported",&json!({}),&report);
+        track_simulation_outcome(&mut state,"create_project_workspace",&json!({}),&json!({}));
+        assert!(state.is_none());
+    }
+}
+
+#[cfg(test)]
+mod creation_completion_regression_tests {
+    use super::*;
+    use crate::ai::workflow::{GenerationProgress,initialize_project};
+    fn requirements()->crate::hardware_contract::Requirements {
+        crate::hardware_contract::Requirements {simulation:true,classic_board:true,..Default::default()}
+    }
+    #[test]
+    fn duplicate_creation_reports_its_real_error_without_reading_the_previous_project() {
+        let temp=tempfile::tempdir().unwrap();let old=initialize_project(temp.path(),"moisture_sim").unwrap();
+        let before=std::fs::read(old.join("main/main.c")).unwrap();
+        let error=initialize_project(temp.path(),"moisture_sim").unwrap_err();
+        assert!(error.contains("moisture_sim")&&error.contains("อยู่แล้ว"));
+        let mut progress=GenerationProgress::default();
+        progress.record("create_project_workspace",&json!({}),&json!({"error":error}));
+        // Both paths would fail or produce an unrelated Hello error if inspected.
+        for path in [old.clone(),temp.path().join("not-a-project")] {
+            assert_eq!(generation_completion_report(&path,true,&progress,requirements(),None).unwrap_err(),error);
+        }
+        assert_eq!(std::fs::read(old.join("main/main.c")).unwrap(),before);
+        assert!(crate::ai::workflow::workspace_tool_blocked("write_file",true));
+    }
+    #[test]
+    fn cancellation_stays_a_creation_error_and_never_validates_an_old_workspace() {
+        let mut progress=GenerationProgress::default();let reason="User cancelled new-project creation";
+        progress.record("create_project_workspace",&json!({}),&json!({"error":reason}));
+        progress.record("write_file",&json!({"path":"main/main.c"}),&json!({"error":"blocked: no workspace"}));
+        assert_eq!(generation_completion_report(Path::new("missing-old-project"),true,&progress,requirements(),None).unwrap_err(),reason);
+    }
+    #[test]
+    fn scaffolding_is_partial_and_actual_code_generation_still_checks_hello() {
+        let temp=tempfile::tempdir().unwrap();let project=initialize_project(temp.path(),"project").unwrap();
+        let mut progress=GenerationProgress::default();
+        progress.record("create_project_workspace",&json!({}),&json!({"workspace_path":project}));
+        progress.record("read_file",&json!({"path":"main/main.c"}),&json!({"result":"template"}));
+        let report=generation_completion_report(&project,false,&progress,requirements(),None).unwrap().unwrap();
+        assert_eq!(report["validation"],"scaffold_only");
+        for flag in ["firmwareAvailable","simulationReady","buildChecked","physicalBoardChecked"] {assert_eq!(report[flag],false);}
+        // Merely reporting a write as successful cannot bless unchanged Hello code.
+        progress.record("write_file",&json!({"path":"main/main.c"}),&json!({"result":"written"}));
+        assert!(generation_completion_report(&project,false,&progress,requirements(),None).unwrap_err().contains("Hello"));
+    }
+    #[test]
+    fn firmware_tool_failure_keeps_the_actual_confirmation_error() {
+        let mut progress=GenerationProgress::default();
+        let error=crate::device_program::compile(r#"{"version":1,"steps":[{"op":"number","value":{"kind":"sensor","name":"analog1"}}]}"#,Default::default()).err().unwrap();
+        progress.record("generate_device_program",&json!({}),&json!({"error":error}));
+        progress.record("read_knowledge_file",&json!({}),&json!({"result":"board documentation"}));
+        assert_eq!(generation_completion_report(Path::new("not-read"),false,&progress,requirements(),None).unwrap_err(),error);
+    }
+    #[test]
+    fn retrying_with_a_fresh_name_clears_the_failure_and_validates_the_real_pair() {
+        let temp=tempfile::tempdir().unwrap();let old=initialize_project(temp.path(),"taken").unwrap();
+        let original=std::fs::read(old.join("main/main.c")).unwrap();let mut progress=GenerationProgress::default();
+        progress.record("create_project_workspace",&json!({}),&json!({"error":initialize_project(temp.path(),"taken").unwrap_err()}));
+        let project=initialize_project(temp.path(),"fresh").unwrap();
+        progress.record("create_project_workspace",&json!({}),&json!({"workspace_path":project}));
+        assert_eq!(generation_completion_report(&project,false,&progress,requirements(),None).unwrap().unwrap()["validation"],"scaffold_only");
+        let bundle=crate::device_program::compile(r#"{"version":1,"steps":[{"op":"number","value":42}]}"#,Default::default()).unwrap();
+        std::fs::write(project.join("main/main.c"),&bundle.firmware).unwrap();
+        let source=crate::simulation_project::prepare_companion(&project,crate::simulation_project::SOURCE_PATH,&bundle.source).unwrap();
+        std::fs::create_dir(project.join("simulation")).unwrap();std::fs::write(project.join(crate::simulation_project::SOURCE_PATH),source).unwrap();
+        progress.record("generate_device_program",&json!({}),&json!({"result":"written"}));
+        assert_eq!(generation_completion_report(&project,false,&progress,requirements(),None).unwrap().unwrap()["validation"],"shared_behavior");
+        assert_eq!(std::fs::read(old.join("main/main.c")).unwrap(),original);
+    }
+}
+
+#[cfg(test)]
+mod completion_error_routing_tests {
+    use super::*;
+    #[test]
+    fn local_project_failures_never_trigger_model_fallback() {
+        for message in ["project_429 already exists","quota_demo already exists","overloaded file","input not found"] {
+            let tagged=crate::ai::workflow::local_completion_error(message.into());
+            assert!(!should_fallback(&tagged));
+            assert_eq!(crate::ai::workflow::completion_error_message(&tagged),Some(message));
+        }
+        for message in ["HTTP 429 quota exhausted","provider error 503 unavailable","Model not found 404"] {assert!(should_fallback(message));}
+        assert!(!should_fallback("ordinary validation failure"));
+    }
+}
+
+#[cfg(test)]
+mod generation_argument_contract_tests {
+    use super::*;
+    #[test]
+    fn all_generation_declarations_explain_nested_statement_tags_and_offer_a_valid_example() {
+        let standard = get_tools();
+        let google = get_google_tools();
+        for name in ["generate_device_program", "generate_simulation"] {
+            let standard = &standard.as_array().unwrap().iter().find(|tool| tool["function"]["name"] == name).unwrap()["function"];
+            let google = google[0]["functionDeclarations"].as_array().unwrap().iter().find(|tool| tool["name"] == name).unwrap();
+            for tool in [standard, google] {
+                let argument = &tool["parameters"]["properties"]["program_json"];
+                let description = argument["description"].as_str().unwrap();
+                assert!(description.contains("EVERY statement") && description.contains("body/then/else") && description.contains("kind"));
+                let example = description.split_once("Example: ").unwrap().1;
+                let bundle = crate::device_program::compile(example, Default::default()).unwrap();
+                assert!(bundle.source.contains("lm73_1.get()") && bundle.source.contains("vTaskDelay(250)"));
+                assert!(bundle.firmware.contains("KB_TEMPERATURE 1"));
+                assert_eq!(tool["parameters"]["required"], json!(["program_json"]));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod paired_argument_recovery_tests {
+    use serde_json::json;
+    #[test]
+    fn correct_moisture_program_passes_after_missing_op_error_without_loosening_validation() {
+        let fixed = json!({"version":1,"steps":[{"op":"repeat","body":[
+            {"op":"number","value":{"kind":"binary","operator":"/","left":{"kind":"binary","operator":"*","left":{"kind":"sensor","name":"analog1"},"right":100},"right":4095}},
+            {"op":"delay","ms":100}
+        ]}],"unsupported":[]});
+        let mut broken = fixed.clone();
+        broken["steps"][0]["body"][0].as_object_mut().unwrap().remove("op");
+        assert!(crate::simulation_compiler::compile(&broken.to_string()).unwrap_err().contains("$.steps[0].body[0]"));
+        let hardware = crate::device_program::Hardware { profile:"kidbright32_v15_analog_bypass".into(), ..Default::default() };
+        let bundle = crate::device_program::compile(&fixed.to_string(), hardware).unwrap();
+        assert!(bundle.source.contains("kb_specio.input1_read()") && bundle.source.contains("vTaskDelay(100)"));
+        assert!(bundle.firmware.contains("KB_ANALOG1 1"));
+        // A repaired op is not permission to invent the physical board profile.
+        assert!(crate::device_program::compile(&fixed.to_string(), Default::default()).is_err());
+        for malformed in [
+            json!({"version":1,"steps":[{"op":"number","value":{"name":"analog1"}}]}),
+            json!({"version":1,"steps":[{"op":"servo","angle":90}]}),
+            json!({"version":1,"steps":[{"op":"number","value":1,"injected":true}]}),
+            json!({"version":1,"steps":[{"op":"number","value":1}],"unsupported":["wifi"]}),
+        ] { assert!(crate::simulation_compiler::compile(&malformed.to_string()).is_err()); }
+    }
+
 }

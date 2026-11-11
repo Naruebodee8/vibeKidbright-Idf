@@ -1,5 +1,8 @@
 # macOS Installer — Setup Guide
 
+> **อัปเดต 11 พฤศจิกายน 2569:** Universal Binary หมายถึงตัวแอป ส่วน ESP-IDF compiler/Python ต้องติดตั้งให้ตรง macOS และ CPU แยกกัน เพิ่ม native installer และงาน CI Build firmware ทั้ง Intel/Apple Silicon ก่อนสร้าง DMG แล้ว ดู [การแก้ No ESP-IDF Python venv found และสถานะผลตรวจ](MACOS-ESP-IDF-RECOVERY-TH.md) ผล Windows ไม่ใช่ผลยืนยันบน Mac จริง
+
+
 ## ภาพรวม
 
 Workflow `build-macos.yml` จะ build แอปเป็น **Universal Binary** (.dmg)

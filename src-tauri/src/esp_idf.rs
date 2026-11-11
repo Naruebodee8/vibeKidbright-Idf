@@ -236,6 +236,38 @@ fn detect_host_python() -> Result<String, String> {
     Err("Python was not found in PATH. Install Python 3 first.".to_string())
 }
 
+fn resolve_managed_idf_pair(toolchain_dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    #[cfg(target_os = "macos")]
+    if let Ok(sdk) = crate::macos_idf::paths(toolchain_dir, std::env::consts::ARCH) {
+        if let Ok(pair) = canonical_idf_pair(&sdk.idf, &sdk.tools) { return Some(pair); }
+    }
+    let frameworks_dir = toolchain_dir.join("frameworks");
+    let tools_dir = toolchain_dir.join("tools");
+
+    if frameworks_dir.exists() && tools_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&frameworks_dir) {
+            let mut idf_dirs: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_dir()
+                        && p.file_name()
+                            .map(|n| n.to_string_lossy().starts_with("esp-idf"))
+                            .unwrap_or(false)
+                        && p.join("tools/idf.py").exists()
+                })
+                .collect();
+            idf_dirs.sort();
+            if let Some(idf_dir) = idf_dirs.pop() {
+                if let Ok(paths) = canonical_idf_pair(&idf_dir, &tools_dir) {
+                    return Some(paths);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Resolve the ESP-IDF and tools paths (runtime, bundled, or dev fallback).
 /// Priority: env override > user config > Happy Meal toolchain > runtime > bundled.
 pub(crate) fn resolve_idf_paths(app_handle: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
@@ -255,31 +287,9 @@ pub(crate) fn resolve_idf_paths(app_handle: &AppHandle) -> Result<(PathBuf, Path
 
     // 3. Happy Meal toolchain (ดาวน์โหลดจาก GitHub Release)
     //    โครงสร้างจริง: toolchain/frameworks/esp-idf-vX.X.X/  +  toolchain/tools/
-    if let Ok(app_data) = app_handle.path().app_data_dir() {
-        let toolchain_dir = app_data.join("toolchain");
-        let frameworks_dir = toolchain_dir.join("frameworks");
-        let tools_dir = toolchain_dir.join("tools");
-
-        if frameworks_dir.exists() && tools_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&frameworks_dir) {
-                let mut idf_dirs: Vec<PathBuf> = entries
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| {
-                        p.is_dir()
-                            && p.file_name()
-                                .map(|n| n.to_string_lossy().starts_with("esp-idf"))
-                                .unwrap_or(false)
-                            && p.join("tools/idf.py").exists()
-                    })
-                    .collect();
-                idf_dirs.sort();
-                if let Some(idf_dir) = idf_dirs.pop() {
-                    if let Ok(paths) = canonical_idf_pair(&idf_dir, &tools_dir) {
-                        return Ok(paths);
-                    }
-                }
-            }
+    if let Ok(toolchain_dir) = crate::toolchain::get_toolchain_dir(app_handle) {
+        if let Some(paths) = resolve_managed_idf_pair(&toolchain_dir) {
+            return Ok(paths);
         }
     }
 
@@ -533,7 +543,13 @@ pub fn find_esp_rom_elf_dir(tools_path: &Path) -> Option<String> {
 
 #[tauri::command]
 pub async fn check_esp_idf(app_handle: AppHandle) -> Result<String, String> {
-    let (actual_idf_path, _) = resolve_idf_paths(&app_handle)?;
+    let (actual_idf_path, _tools) = resolve_idf_paths(&app_handle)?;
+    #[cfg(target_os = "macos")]
+    {
+        let sdk = crate::macos_idf::Sdk { idf: actual_idf_path.clone(), tools: _tools };
+        tokio::task::spawn_blocking(move || crate::macos_idf::validate(&sdk, &AtomicBool::new(false)))
+            .await.map_err(|error| error.to_string())??;
+    }
     Ok(format!(
         "Ready: ESP-IDF found at {}",
         actual_idf_path.display()
@@ -1045,6 +1061,94 @@ pub(crate) fn is_build_dir_stale(
     false
 }
 
+/// An interrupted CMake run can leave a readable cache without the files idf.py
+/// needs. In that state idf.py skips configuration and fails before Ninja starts.
+/// Reconfigure in place so logs and compiled objects remain available.
+pub(crate) fn recover_idf_build_args(project: &Path, args: &[String]) -> Vec<String> {
+    let mut result = args.to_vec();
+    if args.iter().any(|arg| arg == "reconfigure")
+        || !args.iter().any(|arg| matches!(arg.as_str(), "build" | "all" | "flash"))
+    {
+        return result;
+    }
+    let build = project.join("build");
+    if !build.join("CMakeCache.txt").is_file() {
+        return result; // idf.py already configures a new directory itself.
+    }
+    let description_valid = std::fs::read_to_string(build.join("project_description.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .is_some_and(|value| value.is_object());
+    let generated = build.join("build.ninja").is_file() || build.join("Makefile").is_file();
+    if !description_valid || !generated {
+        result.insert(0, "reconfigure".into());
+    }
+    result
+}
+
+#[cfg(test)]
+mod build_recovery_tests {
+    use super::*;
+
+    fn args(items: &[&str]) -> Vec<String> { items.iter().map(|s| s.to_string()).collect() }
+    fn cached_project() -> tempfile::TempDir {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir(project.path().join("build")).unwrap();
+        std::fs::write(project.path().join("build/CMakeCache.txt"), "CMAKE_GENERATOR:INTERNAL=Ninja\n").unwrap();
+        project
+    }
+
+    #[test]
+    fn missing_description_reconfigures_without_deleting_cache_or_sources() {
+        let project = cached_project();
+        std::fs::create_dir(project.path().join("main")).unwrap();
+        std::fs::write(project.path().join("main/main.c"), "SW1 firmware").unwrap();
+        let cache = std::fs::read(project.path().join("build/CMakeCache.txt")).unwrap();
+        assert_eq!(recover_idf_build_args(project.path(), &args(&["build", "flash", "-p", "COM6"])), args(&["reconfigure", "build", "flash", "-p", "COM6"]));
+        assert_eq!(std::fs::read(project.path().join("build/CMakeCache.txt")).unwrap(), cache);
+        assert_eq!(std::fs::read_to_string(project.path().join("main/main.c")).unwrap(), "SW1 firmware");
+    }
+
+    #[test]
+    fn malformed_description_reconfigures_instead_of_repeating_json_errors() {
+        let project = cached_project();
+        std::fs::write(project.path().join("build/build.ninja"), "fixture").unwrap();
+        for content in ["", "{", "null", "[]"] {
+            std::fs::write(project.path().join("build/project_description.json"), content).unwrap();
+            assert_eq!(recover_idf_build_args(project.path(), &args(&["build"])), args(&["reconfigure", "build"]));
+        }
+    }
+
+    #[test]
+    fn description_without_generated_build_files_reconfigures() {
+        let project = cached_project();
+        std::fs::write(project.path().join("build/project_description.json"), "{}").unwrap();
+        assert_eq!(recover_idf_build_args(project.path(), &args(&["flash"])), args(&["reconfigure", "flash"]));
+    }
+
+    #[test]
+    fn healthy_ninja_and_make_builds_keep_the_incremental_command() {
+        for generator in ["build.ninja", "Makefile"] {
+            let project = cached_project();
+            std::fs::write(project.path().join("build/project_description.json"), "{}").unwrap();
+            std::fs::write(project.path().join("build").join(generator), "fixture").unwrap();
+            let original = args(&["build", "flash", "-p", "COM6"]);
+            assert_eq!(recover_idf_build_args(project.path(), &original), original);
+            assert!(project.path().join("build").join(generator).is_file());
+        }
+    }
+
+    #[test]
+    fn fresh_project_and_explicit_reconfigure_do_not_duplicate_actions() {
+        let fresh = tempfile::tempdir().unwrap();
+        assert_eq!(recover_idf_build_args(fresh.path(), &args(&["build"])), args(&["build"]));
+        let project = cached_project();
+        for original in [args(&["reconfigure", "build"]), args(&["build", "reconfigure"]), args(&["fullclean"]), args(&["size"]), vec![]] {
+            assert_eq!(recover_idf_build_args(project.path(), &original), original);
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn run_shell_command(
     app_handle: AppHandle,
@@ -1092,6 +1196,28 @@ pub async fn run_shell_command(
         }
     }
 
+    let command_args = match (cmd.as_str(), cwd.as_deref()) {
+        ("idf.py", Some(project)) if !project.is_empty() && project != "." =>
+            recover_idf_build_args(Path::new(project), &args),
+        _ => args.clone(),
+    };
+    if command_args != args {
+        let _ = app_handle.emit("terminal-output",
+            "⚠️ Build configuration is incomplete. Running reconfigure before build; keeping existing logs and objects.".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    let native = {
+        let sdk = crate::macos_idf::Sdk { idf: actual_idf_path.clone(), tools: actual_tools_path.clone() };
+        if let Some(project) = &cwd { if !project.is_empty() && project != "." {
+            crate::macos_idf::check_path(Path::new(project), "Project path")?;
+        }}
+        tokio::task::spawn_blocking(move || crate::macos_idf::environment(&sdk, &AtomicBool::new(false)))
+            .await.map_err(|error| error.to_string())??
+    };
+
+    #[cfg(target_os = "macos")]
+    let python_bin = native.python.clone();
     let mut command = if cmd == "idf.py" {
         let mut c = Command::new(&python_bin);
         c.arg(actual_idf_path.join("tools/idf.py"));
@@ -1107,7 +1233,7 @@ pub async fn run_shell_command(
     }
 
     command
-        .args(&args)
+        .args(&command_args)
         .env("IDF_PATH", &actual_idf_path)
         .env("IDF_TOOLS_PATH", &actual_tools_path)
         .env("IDF_PYTHON_ENV_PATH", &python_env_path)
@@ -1124,6 +1250,9 @@ pub async fn run_shell_command(
     if let Some(rom_elf_dir) = find_esp_rom_elf_dir(&actual_tools_path) {
         command.env("ESP_ROM_ELF_DIR", rom_elf_dir);
     }
+
+    #[cfg(target_os = "macos")]
+    command.envs(&native.env).env_remove("PYTHONHOME").env_remove("PYTHONPATH");
 
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
 
@@ -1282,6 +1411,7 @@ pub async fn list_serial_ports() -> Result<Vec<String>, String> {
         .map_err(|e| format!("Failed to list serial ports: {}", e))?
         .into_iter()
         .map(|p| p.port_name)
+        .filter(|name| !cfg!(target_os="macos") || mac_board_port(name))
         .collect();
     Ok(ports)
 }
@@ -1499,6 +1629,23 @@ mod tests {
     }
 
     #[test]
+    fn managed_sdk_resolver_uses_saved_location_with_thai_and_spaces() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_data = temp.path().join("app-data");
+        let sdk = crate::toolchain_storage::alternative_dir(&app_data, &temp.path().join("ไดรฟ์ อื่น"));
+        let idf = sdk.join("frameworks/esp-idf-test");
+        std::fs::create_dir_all(idf.join("tools")).unwrap();
+        std::fs::create_dir_all(sdk.join("tools")).unwrap();
+        std::fs::write(idf.join("tools/idf.py"), "# test fixture").unwrap();
+        crate::toolchain_storage::save_location(&app_data, &sdk).unwrap();
+        let restored = crate::toolchain_storage::resolve_location(&app_data).unwrap();
+        let (resolved_idf, resolved_tools) = resolve_managed_idf_pair(&restored).unwrap();
+        assert_eq!(resolved_idf, strip_unc_prefix(idf.canonicalize().unwrap()));
+        assert_eq!(resolved_tools, strip_unc_prefix(sdk.join("tools").canonicalize().unwrap()));
+        assert!(!app_data.join("toolchain").exists());
+    }
+
+    #[test]
     fn canonical_idf_pair_validates_idf_py_presence() {
         let tmp = tempfile::tempdir().unwrap();
         let idf = tmp.path().join("esp-idf");
@@ -1515,5 +1662,34 @@ mod tests {
         let (got_idf, got_tools) = canonical_idf_pair(&idf, &tools).unwrap();
         assert_eq!(got_idf.file_name(), Some(std::ffi::OsStr::new("esp-idf")));
         assert!(got_tools.exists());
+    }
+}
+
+// Persist a verified native installation without losing unrelated config values.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn save_native_idf_paths(sdk: &crate::macos_idf::Sdk) -> Result<(), String> {
+    let path = esp_idf_config_path();
+    let parent = path.parent().ok_or("Invalid ESP-IDF config path")?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let mut config = read_esp_idf_config();
+    config["custom_idf_path"] = serde_json::json!(sdk.idf);
+    config["custom_tools_path"] = serde_json::json!(sdk.tools);
+    let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+    use std::io::Write;
+    file.write_all(&serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?)
+        .and_then(|_| file.as_file().sync_all()).map_err(|e| e.to_string())?;
+    file.persist(&path).map_err(|e| format!("Native SDK installed, but cannot save {}: {e}. Retry Installation to save it again.", path.display()))?;
+    invalidate_idf_environment();
+    Ok(())
+}
+
+fn mac_board_port(name: &str) -> bool {
+    !name.contains("debug-console") && !name.contains("Bluetooth-Incoming-Port")
+}
+#[cfg(test)]
+mod mac_port_tests {
+    #[test] fn excludes_system_debug_ports_but_keeps_usb_and_unknown_hardware_ports() {
+        for name in ["/dev/cu.debug-console","/dev/tty.debug-console","/dev/cu.Bluetooth-Incoming-Port"] {assert!(!super::mac_board_port(name));}
+        for name in ["/dev/cu.usbserial-110","/dev/cu.usbmodem101","/dev/cu.custom-board"] {assert!(super::mac_board_port(name));}
     }
 }

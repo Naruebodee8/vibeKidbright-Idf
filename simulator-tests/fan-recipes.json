@@ -1,0 +1,536 @@
+{
+  "usb": {
+    "firmware": "#include <stdbool.h>\n#include \"freertos/FreeRTOS.h\"\n#include \"freertos/task.h\"\n#include \"driver/gpio.h\"\n#include \"esp_log.h\"\n\n// Classic KidBright reference wiring. Verify the physical board revision.\n// USB_SW GPIO25: active LOW per the classic board reference; OUT gates: HIGH sinks.\n#define SW1_GPIO GPIO_NUM_16\n#define FAN_GPIO GPIO_NUM_25\n#define FAN_ON_LEVEL 0\n#define FAN_OFF_LEVEL 1\n#define SAMPLE_MS 10\n#define STABLE_SAMPLES 3\nstatic const char *TAG = \"FAN_CONTROL\";\n\nstatic void fan_write(bool on) {\n    ESP_ERROR_CHECK(gpio_set_level(FAN_GPIO, on ? FAN_ON_LEVEL : FAN_OFF_LEVEL));\n}\n\nvoid app_main(void) {\n    gpio_config_t button = {\n        .pin_bit_mask = 1ULL << SW1_GPIO,\n        .mode = GPIO_MODE_INPUT,\n        .pull_up_en = GPIO_PULLUP_ENABLE,\n        .pull_down_en = GPIO_PULLDOWN_DISABLE,\n        .intr_type = GPIO_INTR_DISABLE\n    };\n    ESP_ERROR_CHECK(gpio_config(&button));\n    // Preload OFF before enabling the output to avoid an unintended ON pulse.\n    fan_write(false);\n    gpio_config_t output = {\n        .pin_bit_mask = 1ULL << FAN_GPIO,\n        .mode = GPIO_MODE_OUTPUT,\n        .pull_up_en = GPIO_PULLUP_DISABLE,\n        .pull_down_en = GPIO_PULLDOWN_DISABLE,\n        .intr_type = GPIO_INTR_DISABLE\n    };\n    ESP_ERROR_CHECK(gpio_config(&output));\n    fan_write(false);\n    bool fan_on = false;\n    int last_sample = 0, stable_sample = 0, stable_count = 0;\n    ESP_LOGI(TAG, \"Fan OFF (usb)\");\n    while (1) {\n        // Use logical pressed=1 in both firmware and simulation.\n        int sample = gpio_get_level(SW1_GPIO) == 0;\n        if (sample != last_sample) {\n            last_sample = sample;\n            stable_count = 0;\n        } else if (stable_count < STABLE_SAMPLES) {\n            ++stable_count;\n        }\n        if (stable_count == STABLE_SAMPLES && stable_sample != sample) {\n            stable_sample = sample;\n            if (stable_sample) {\n                fan_on = !fan_on;\n                fan_write(fan_on);\n                ESP_LOGI(TAG, \"Fan %s\", fan_on ? \"ON\" : \"OFF\");\n            }\n        }\n        vTaskDelay(pdMS_TO_TICKS(SAMPLE_MS));\n    }\n}\n",
+    "program": {
+      "steps": [
+        {
+          "name": "fan_on",
+          "op": "set",
+          "value": false
+        },
+        {
+          "name": "last_sample",
+          "op": "set",
+          "value": 0
+        },
+        {
+          "name": "stable_sample",
+          "op": "set",
+          "value": 0
+        },
+        {
+          "name": "stable_count",
+          "op": "set",
+          "value": 0
+        },
+        {
+          "op": "output",
+          "port": "usb",
+          "value": 0
+        },
+        {
+          "body": [
+            {
+              "name": "sample",
+              "op": "set",
+              "value": {
+                "kind": "sensor",
+                "name": "s1"
+              }
+            },
+            {
+              "condition": {
+                "kind": "binary",
+                "left": {
+                  "kind": "var",
+                  "name": "sample"
+                },
+                "operator": "!=",
+                "right": {
+                  "kind": "var",
+                  "name": "last_sample"
+                }
+              },
+              "else": [
+                {
+                  "condition": {
+                    "kind": "binary",
+                    "left": {
+                      "kind": "var",
+                      "name": "stable_count"
+                    },
+                    "operator": "<",
+                    "right": 3
+                  },
+                  "op": "if",
+                  "then": [
+                    {
+                      "name": "stable_count",
+                      "op": "set",
+                      "value": {
+                        "kind": "binary",
+                        "left": {
+                          "kind": "var",
+                          "name": "stable_count"
+                        },
+                        "operator": "+",
+                        "right": 1
+                      }
+                    }
+                  ]
+                }
+              ],
+              "op": "if",
+              "then": [
+                {
+                  "name": "last_sample",
+                  "op": "set",
+                  "value": {
+                    "kind": "var",
+                    "name": "sample"
+                  }
+                },
+                {
+                  "name": "stable_count",
+                  "op": "set",
+                  "value": 0
+                }
+              ]
+            },
+            {
+              "condition": {
+                "kind": "binary",
+                "left": {
+                  "kind": "binary",
+                  "left": {
+                    "kind": "var",
+                    "name": "stable_count"
+                  },
+                  "operator": "==",
+                  "right": 3
+                },
+                "operator": "&&",
+                "right": {
+                  "kind": "binary",
+                  "left": {
+                    "kind": "var",
+                    "name": "stable_sample"
+                  },
+                  "operator": "!=",
+                  "right": {
+                    "kind": "var",
+                    "name": "sample"
+                  }
+                }
+              },
+              "op": "if",
+              "then": [
+                {
+                  "name": "stable_sample",
+                  "op": "set",
+                  "value": {
+                    "kind": "var",
+                    "name": "sample"
+                  }
+                },
+                {
+                  "condition": {
+                    "kind": "var",
+                    "name": "stable_sample"
+                  },
+                  "op": "if",
+                  "then": [
+                    {
+                      "name": "fan_on",
+                      "op": "set",
+                      "value": {
+                        "kind": "unary",
+                        "operator": "!",
+                        "value": {
+                          "kind": "var",
+                          "name": "fan_on"
+                        }
+                      }
+                    },
+                    {
+                      "op": "output",
+                      "port": "usb",
+                      "value": {
+                        "kind": "var",
+                        "name": "fan_on"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "ms": 10,
+              "op": "delay"
+            }
+          ],
+          "op": "repeat"
+        }
+      ],
+      "unsupported": [],
+      "version": 1
+    },
+    "source": "// Generated device behavior for the reference JS-Interpreter -> LED/ports -> Unity bridge.\nvar fan_on = 0;\nvar last_sample = 0;\nvar sample = 0;\nvar stable_count = 0;\nvar stable_sample = 0;\nfan_on = false;\nlast_sample = 0.0;\nstable_sample = 0.0;\nstable_count = 0.0;\nports.usbsw_write(0.0);\nwhile(1) {\nsample = button12.sw1_get();\nif((sample != last_sample)) {\nlast_sample = sample;\nstable_count = 0.0;\n} else {\nif((stable_count < 3.0)) {\nstable_count = (stable_count + 1.0);\n} else {\n}\n}\nif(((stable_count == 3.0) && (stable_sample != sample))) {\nstable_sample = sample;\nif(stable_sample) {\nfan_on = (!fan_on);\nports.usbsw_write(fan_on);\n} else {\n}\n} else {\n}\nvTaskDelay(10);\nvTaskDelay(0);\n}\n"
+  },
+  "out1": {
+    "firmware": "#include <stdbool.h>\n#include \"freertos/FreeRTOS.h\"\n#include \"freertos/task.h\"\n#include \"driver/gpio.h\"\n#include \"esp_log.h\"\n\n// Classic KidBright reference wiring. Verify the physical board revision.\n// USB_SW GPIO25: active LOW per the classic board reference; OUT gates: HIGH sinks.\n#define SW1_GPIO GPIO_NUM_16\n#define FAN_GPIO GPIO_NUM_26\n#define FAN_ON_LEVEL 1\n#define FAN_OFF_LEVEL 0\n#define SAMPLE_MS 10\n#define STABLE_SAMPLES 3\nstatic const char *TAG = \"FAN_CONTROL\";\n\nstatic void fan_write(bool on) {\n    ESP_ERROR_CHECK(gpio_set_level(FAN_GPIO, on ? FAN_ON_LEVEL : FAN_OFF_LEVEL));\n}\n\nvoid app_main(void) {\n    gpio_config_t button = {\n        .pin_bit_mask = 1ULL << SW1_GPIO,\n        .mode = GPIO_MODE_INPUT,\n        .pull_up_en = GPIO_PULLUP_ENABLE,\n        .pull_down_en = GPIO_PULLDOWN_DISABLE,\n        .intr_type = GPIO_INTR_DISABLE\n    };\n    ESP_ERROR_CHECK(gpio_config(&button));\n    // Preload OFF before enabling the output to avoid an unintended ON pulse.\n    fan_write(false);\n    gpio_config_t output = {\n        .pin_bit_mask = 1ULL << FAN_GPIO,\n        .mode = GPIO_MODE_OUTPUT,\n        .pull_up_en = GPIO_PULLUP_DISABLE,\n        .pull_down_en = GPIO_PULLDOWN_DISABLE,\n        .intr_type = GPIO_INTR_DISABLE\n    };\n    ESP_ERROR_CHECK(gpio_config(&output));\n    fan_write(false);\n    bool fan_on = false;\n    int last_sample = 0, stable_sample = 0, stable_count = 0;\n    ESP_LOGI(TAG, \"Fan OFF (out1)\");\n    while (1) {\n        // Use logical pressed=1 in both firmware and simulation.\n        int sample = gpio_get_level(SW1_GPIO) == 0;\n        if (sample != last_sample) {\n            last_sample = sample;\n            stable_count = 0;\n        } else if (stable_count < STABLE_SAMPLES) {\n            ++stable_count;\n        }\n        if (stable_count == STABLE_SAMPLES && stable_sample != sample) {\n            stable_sample = sample;\n            if (stable_sample) {\n                fan_on = !fan_on;\n                fan_write(fan_on);\n                ESP_LOGI(TAG, \"Fan %s\", fan_on ? \"ON\" : \"OFF\");\n            }\n        }\n        vTaskDelay(pdMS_TO_TICKS(SAMPLE_MS));\n    }\n}\n",
+    "program": {
+      "steps": [
+        {
+          "name": "fan_on",
+          "op": "set",
+          "value": false
+        },
+        {
+          "name": "last_sample",
+          "op": "set",
+          "value": 0
+        },
+        {
+          "name": "stable_sample",
+          "op": "set",
+          "value": 0
+        },
+        {
+          "name": "stable_count",
+          "op": "set",
+          "value": 0
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": 0
+        },
+        {
+          "body": [
+            {
+              "name": "sample",
+              "op": "set",
+              "value": {
+                "kind": "sensor",
+                "name": "s1"
+              }
+            },
+            {
+              "condition": {
+                "kind": "binary",
+                "left": {
+                  "kind": "var",
+                  "name": "sample"
+                },
+                "operator": "!=",
+                "right": {
+                  "kind": "var",
+                  "name": "last_sample"
+                }
+              },
+              "else": [
+                {
+                  "condition": {
+                    "kind": "binary",
+                    "left": {
+                      "kind": "var",
+                      "name": "stable_count"
+                    },
+                    "operator": "<",
+                    "right": 3
+                  },
+                  "op": "if",
+                  "then": [
+                    {
+                      "name": "stable_count",
+                      "op": "set",
+                      "value": {
+                        "kind": "binary",
+                        "left": {
+                          "kind": "var",
+                          "name": "stable_count"
+                        },
+                        "operator": "+",
+                        "right": 1
+                      }
+                    }
+                  ]
+                }
+              ],
+              "op": "if",
+              "then": [
+                {
+                  "name": "last_sample",
+                  "op": "set",
+                  "value": {
+                    "kind": "var",
+                    "name": "sample"
+                  }
+                },
+                {
+                  "name": "stable_count",
+                  "op": "set",
+                  "value": 0
+                }
+              ]
+            },
+            {
+              "condition": {
+                "kind": "binary",
+                "left": {
+                  "kind": "binary",
+                  "left": {
+                    "kind": "var",
+                    "name": "stable_count"
+                  },
+                  "operator": "==",
+                  "right": 3
+                },
+                "operator": "&&",
+                "right": {
+                  "kind": "binary",
+                  "left": {
+                    "kind": "var",
+                    "name": "stable_sample"
+                  },
+                  "operator": "!=",
+                  "right": {
+                    "kind": "var",
+                    "name": "sample"
+                  }
+                }
+              },
+              "op": "if",
+              "then": [
+                {
+                  "name": "stable_sample",
+                  "op": "set",
+                  "value": {
+                    "kind": "var",
+                    "name": "sample"
+                  }
+                },
+                {
+                  "condition": {
+                    "kind": "var",
+                    "name": "stable_sample"
+                  },
+                  "op": "if",
+                  "then": [
+                    {
+                      "name": "fan_on",
+                      "op": "set",
+                      "value": {
+                        "kind": "unary",
+                        "operator": "!",
+                        "value": {
+                          "kind": "var",
+                          "name": "fan_on"
+                        }
+                      }
+                    },
+                    {
+                      "op": "output",
+                      "port": "out1",
+                      "value": {
+                        "kind": "var",
+                        "name": "fan_on"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "ms": 10,
+              "op": "delay"
+            }
+          ],
+          "op": "repeat"
+        }
+      ],
+      "unsupported": [],
+      "version": 1
+    },
+    "source": "// Generated device behavior for the reference JS-Interpreter -> LED/ports -> Unity bridge.\nvar fan_on = 0;\nvar last_sample = 0;\nvar sample = 0;\nvar stable_count = 0;\nvar stable_sample = 0;\nfan_on = false;\nlast_sample = 0.0;\nstable_sample = 0.0;\nstable_count = 0.0;\nports.output1_write(0.0);\nwhile(1) {\nsample = button12.sw1_get();\nif((sample != last_sample)) {\nlast_sample = sample;\nstable_count = 0.0;\n} else {\nif((stable_count < 3.0)) {\nstable_count = (stable_count + 1.0);\n} else {\n}\n}\nif(((stable_count == 3.0) && (stable_sample != sample))) {\nstable_sample = sample;\nif(stable_sample) {\nfan_on = (!fan_on);\nports.output1_write(fan_on);\n} else {\n}\n} else {\n}\nvTaskDelay(10);\nvTaskDelay(0);\n}\n"
+  },
+  "out2": {
+    "firmware": "#include <stdbool.h>\n#include \"freertos/FreeRTOS.h\"\n#include \"freertos/task.h\"\n#include \"driver/gpio.h\"\n#include \"esp_log.h\"\n\n// Classic KidBright reference wiring. Verify the physical board revision.\n// USB_SW GPIO25: active LOW per the classic board reference; OUT gates: HIGH sinks.\n#define SW1_GPIO GPIO_NUM_16\n#define FAN_GPIO GPIO_NUM_27\n#define FAN_ON_LEVEL 1\n#define FAN_OFF_LEVEL 0\n#define SAMPLE_MS 10\n#define STABLE_SAMPLES 3\nstatic const char *TAG = \"FAN_CONTROL\";\n\nstatic void fan_write(bool on) {\n    ESP_ERROR_CHECK(gpio_set_level(FAN_GPIO, on ? FAN_ON_LEVEL : FAN_OFF_LEVEL));\n}\n\nvoid app_main(void) {\n    gpio_config_t button = {\n        .pin_bit_mask = 1ULL << SW1_GPIO,\n        .mode = GPIO_MODE_INPUT,\n        .pull_up_en = GPIO_PULLUP_ENABLE,\n        .pull_down_en = GPIO_PULLDOWN_DISABLE,\n        .intr_type = GPIO_INTR_DISABLE\n    };\n    ESP_ERROR_CHECK(gpio_config(&button));\n    // Preload OFF before enabling the output to avoid an unintended ON pulse.\n    fan_write(false);\n    gpio_config_t output = {\n        .pin_bit_mask = 1ULL << FAN_GPIO,\n        .mode = GPIO_MODE_OUTPUT,\n        .pull_up_en = GPIO_PULLUP_DISABLE,\n        .pull_down_en = GPIO_PULLDOWN_DISABLE,\n        .intr_type = GPIO_INTR_DISABLE\n    };\n    ESP_ERROR_CHECK(gpio_config(&output));\n    fan_write(false);\n    bool fan_on = false;\n    int last_sample = 0, stable_sample = 0, stable_count = 0;\n    ESP_LOGI(TAG, \"Fan OFF (out2)\");\n    while (1) {\n        // Use logical pressed=1 in both firmware and simulation.\n        int sample = gpio_get_level(SW1_GPIO) == 0;\n        if (sample != last_sample) {\n            last_sample = sample;\n            stable_count = 0;\n        } else if (stable_count < STABLE_SAMPLES) {\n            ++stable_count;\n        }\n        if (stable_count == STABLE_SAMPLES && stable_sample != sample) {\n            stable_sample = sample;\n            if (stable_sample) {\n                fan_on = !fan_on;\n                fan_write(fan_on);\n                ESP_LOGI(TAG, \"Fan %s\", fan_on ? \"ON\" : \"OFF\");\n            }\n        }\n        vTaskDelay(pdMS_TO_TICKS(SAMPLE_MS));\n    }\n}\n",
+    "program": {
+      "steps": [
+        {
+          "name": "fan_on",
+          "op": "set",
+          "value": false
+        },
+        {
+          "name": "last_sample",
+          "op": "set",
+          "value": 0
+        },
+        {
+          "name": "stable_sample",
+          "op": "set",
+          "value": 0
+        },
+        {
+          "name": "stable_count",
+          "op": "set",
+          "value": 0
+        },
+        {
+          "op": "output",
+          "port": "out2",
+          "value": 0
+        },
+        {
+          "body": [
+            {
+              "name": "sample",
+              "op": "set",
+              "value": {
+                "kind": "sensor",
+                "name": "s1"
+              }
+            },
+            {
+              "condition": {
+                "kind": "binary",
+                "left": {
+                  "kind": "var",
+                  "name": "sample"
+                },
+                "operator": "!=",
+                "right": {
+                  "kind": "var",
+                  "name": "last_sample"
+                }
+              },
+              "else": [
+                {
+                  "condition": {
+                    "kind": "binary",
+                    "left": {
+                      "kind": "var",
+                      "name": "stable_count"
+                    },
+                    "operator": "<",
+                    "right": 3
+                  },
+                  "op": "if",
+                  "then": [
+                    {
+                      "name": "stable_count",
+                      "op": "set",
+                      "value": {
+                        "kind": "binary",
+                        "left": {
+                          "kind": "var",
+                          "name": "stable_count"
+                        },
+                        "operator": "+",
+                        "right": 1
+                      }
+                    }
+                  ]
+                }
+              ],
+              "op": "if",
+              "then": [
+                {
+                  "name": "last_sample",
+                  "op": "set",
+                  "value": {
+                    "kind": "var",
+                    "name": "sample"
+                  }
+                },
+                {
+                  "name": "stable_count",
+                  "op": "set",
+                  "value": 0
+                }
+              ]
+            },
+            {
+              "condition": {
+                "kind": "binary",
+                "left": {
+                  "kind": "binary",
+                  "left": {
+                    "kind": "var",
+                    "name": "stable_count"
+                  },
+                  "operator": "==",
+                  "right": 3
+                },
+                "operator": "&&",
+                "right": {
+                  "kind": "binary",
+                  "left": {
+                    "kind": "var",
+                    "name": "stable_sample"
+                  },
+                  "operator": "!=",
+                  "right": {
+                    "kind": "var",
+                    "name": "sample"
+                  }
+                }
+              },
+              "op": "if",
+              "then": [
+                {
+                  "name": "stable_sample",
+                  "op": "set",
+                  "value": {
+                    "kind": "var",
+                    "name": "sample"
+                  }
+                },
+                {
+                  "condition": {
+                    "kind": "var",
+                    "name": "stable_sample"
+                  },
+                  "op": "if",
+                  "then": [
+                    {
+                      "name": "fan_on",
+                      "op": "set",
+                      "value": {
+                        "kind": "unary",
+                        "operator": "!",
+                        "value": {
+                          "kind": "var",
+                          "name": "fan_on"
+                        }
+                      }
+                    },
+                    {
+                      "op": "output",
+                      "port": "out2",
+                      "value": {
+                        "kind": "var",
+                        "name": "fan_on"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "ms": 10,
+              "op": "delay"
+            }
+          ],
+          "op": "repeat"
+        }
+      ],
+      "unsupported": [],
+      "version": 1
+    },
+    "source": "// Generated device behavior for the reference JS-Interpreter -> LED/ports -> Unity bridge.\nvar fan_on = 0;\nvar last_sample = 0;\nvar sample = 0;\nvar stable_count = 0;\nvar stable_sample = 0;\nfan_on = false;\nlast_sample = 0.0;\nstable_sample = 0.0;\nstable_count = 0.0;\nports.output2_write(0.0);\nwhile(1) {\nsample = button12.sw1_get();\nif((sample != last_sample)) {\nlast_sample = sample;\nstable_count = 0.0;\n} else {\nif((stable_count < 3.0)) {\nstable_count = (stable_count + 1.0);\n} else {\n}\n}\nif(((stable_count == 3.0) && (stable_sample != sample))) {\nstable_sample = sample;\nif(stable_sample) {\nfan_on = (!fan_on);\nports.output2_write(fan_on);\n} else {\n}\n} else {\n}\nvTaskDelay(10);\nvTaskDelay(0);\n}\n"
+  }
+}

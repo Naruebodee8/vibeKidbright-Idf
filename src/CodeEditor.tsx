@@ -1,3 +1,5 @@
+import { normPath } from "./utils";
+import { clearRecoveredReview } from "./pendingReviewRecovery";
 import { useRef, useEffect, useCallback } from "react";
 import Editor, { OnMount, BeforeMount } from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
@@ -238,6 +240,9 @@ export default function CodeEditor({
     
     // State to hold pending diff content
     const [pendingContent, setPendingContent] = useState<string | null>(null);
+    const [reviewBusy, setReviewBusy] = useState(false);
+    const reviewBusyRef = useRef(false);
+    const reviewEpoch = useRef(0);
 
     // Latest goto request, applied on mount (Monaco loads async) and on change
     const gotoRef = useRef<GotoLineRequest | null>(gotoLineRequest);
@@ -335,9 +340,10 @@ export default function CodeEditor({
         let isMounted = true;
         
         const checkDiff = () => {
+            const epoch = ++reviewEpoch.current;
             invoke<string | null>("check_pending_diff", { path: filePath })
                 .then(res => {
-                    if (isMounted) {
+                    if (isMounted && epoch === reviewEpoch.current) {
                         setPendingContent(res);
                     }
                 })
@@ -348,6 +354,11 @@ export default function CodeEditor({
                 });
         };
         
+        const requestReview = (event: Event) => {
+            const path = (event as CustomEvent<{path:string}>).detail?.path;
+            if (path && normPath(path) === normPath(filePath)) checkDiff();
+        };
+        window.addEventListener("vibe-review-diff", requestReview);
         checkDiff(); // Initial check
 
         let unlisten: (() => void) | null = null;
@@ -362,15 +373,7 @@ export default function CodeEditor({
                     const currentPath = String(filePath || "");
                     
                     if (eventPath && currentPath) {
-                        const normalize = (p: string) => p.replace(/\\/g, '/').toLowerCase().replace(/\/+/g, '/');
-                        const normEvent = normalize(eventPath);
-                        const normCurrent = normalize(currentPath);
-                        // Also match by last 2 path segments (e.g. "main/main.c")
-                        const tailSegments = (p: string) => p.split('/').slice(-2).join('/');
-                        if (normEvent === normCurrent || 
-                            normCurrent.endsWith(normEvent) ||
-                            normEvent.endsWith(normCurrent) ||
-                            tailSegments(normEvent) === tailSegments(normCurrent)) {
+                        if (normPath(eventPath) === normPath(currentPath)) {
                             checkDiff();
                         }
                     }
@@ -378,35 +381,54 @@ export default function CodeEditor({
                     console.error("Error handling ai-diff-pending:", e);
                 }            }).then(fn => {
                 if (!isMounted) fn();
-                else unlisten = fn;
+                else { unlisten = fn; checkDiff(); }
             });
         });
 
         return () => { 
             isMounted = false; 
             if (unlisten) unlisten();
+            window.removeEventListener("vibe-review-diff", requestReview);
         };
     }, [filePath]);
 
     const handleAcceptDiff = async () => {
+        if (reviewBusyRef.current || pendingContent === null) return;
+        reviewBusyRef.current = true; setReviewBusy(true);
+        const epoch = ++reviewEpoch.current;
         try {
-            await invoke("accept_diff", { path: filePath });
-            setPendingContent(null);
+            await invoke("accept_diff", { path: filePath, expectedContent: pendingContent });
+            clearRecoveredReview(filePath);
+            if (epoch === reviewEpoch.current) setPendingContent(null);
             // The file-modified event will trigger a reload of the content from disk automatically
         } catch (err) {
             console.error("Failed to accept diff:", err);
-            toast("Failed to apply AI changes. Please try again.", "error");
-        }
+            toast("Failed to apply AI changes: " + String(err), "error");
+        } finally { reviewBusyRef.current = false; setReviewBusy(false); }
     };
 
     const handleRejectDiff = async () => {
+        if (reviewBusyRef.current || pendingContent === null) return;
+        reviewBusyRef.current = true; setReviewBusy(true);
+        const epoch = ++reviewEpoch.current;
         try {
-            await invoke("reject_diff", { path: filePath });
-            setPendingContent(null);
+            await invoke("reject_diff", { path: filePath, expectedContent: pendingContent });
+            clearRecoveredReview(filePath);
+            if (epoch === reviewEpoch.current) setPendingContent(null);
         } catch (err) {
             console.error("Failed to reject diff:", err);
-            toast("Failed to discard AI changes. Please try again.", "error");
-        }
+            toast("Failed to discard AI changes: " + String(err), "error");
+        } finally { reviewBusyRef.current = false; setReviewBusy(false); }
+    };
+
+    const handleDiffMount = (instance: editor.IStandaloneDiffEditor) => {
+        const models = instance.getModel();
+        // The React wrapper disposes models before the widget by default.
+        // Own these models and release them after the widget detached them.
+        instance.onDidDispose(() => queueMicrotask(() => {
+            if (models && !models.original.isDisposed()) models.original.dispose();
+            if (models && !models.modified.isDisposed()) models.modified.dispose();
+        }));
     };
 
     const handleEditorMount: OnMount = (editor, monaco) => {
@@ -480,6 +502,7 @@ export default function CodeEditor({
                     </div>
                     <button
                         onClick={handleRejectDiff}
+                        disabled={reviewBusy}
                         className="px-4 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors shadow-sm"
                         title="Discard AI proposed changes"
                     >
@@ -487,6 +510,7 @@ export default function CodeEditor({
                     </button>
                     <button
                         onClick={handleAcceptDiff}
+                        disabled={reviewBusy}
                         className="px-4 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/30 text-emerald-400 border border-emerald-500/30 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors shadow-sm"
                         title="Accept AI proposed changes"
                     >
@@ -497,6 +521,9 @@ export default function CodeEditor({
             
             {pendingContent !== null ? (
                 <DiffEditor
+                    keepCurrentOriginalModel={true}
+                    keepCurrentModifiedModel={true}
+                    onMount={handleDiffMount}
                     height="100%"
                     language={language}
                     original={value}

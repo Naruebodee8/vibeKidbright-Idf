@@ -1,0 +1,12 @@
+{
+"companyName": "Nectec",
+"productName": "KidBright Virtual",
+"dataUrl": "KV.data.unityweb",
+"wasmCodeUrl": "KV.wasm.code.unityweb",
+"wasmFrameworkUrl": "KV.wasm.framework.unityweb",
+"TOTAL_MEMORY": 268435456,
+"graphicsAPI": ["WebGL 2.0", "WebGL 1.0"],
+"webglContextAttributes": {"preserveDrawingBuffer": false},
+"splashScreenStyle": "Dark",
+"backgroundColor": "#231F20"
+}

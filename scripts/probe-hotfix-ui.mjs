@@ -1,7 +1,7 @@
 // Compiled UI probe with an in-memory IPC fixture; never installs a real SDK.
 import {createServer} from "node:http";
 import {readFile, writeFile, mkdir} from "node:fs/promises";
-import {existsSync} from "node:fs";
+import {existsSync, readFileSync} from "node:fs";
 import {createRequire} from "node:module";
 import {resolve, extname, sep} from "node:path";
 const root=process.cwd();
@@ -35,7 +35,7 @@ try{
         localStorage.clear();
         localStorage.setItem("vibe-selected-board","miuaiplus");
         const listeners=new Map(),callbacks=new Map(),calls=[];let next=1,installed=false;
-        window.__hotfixProbe={calls,installed:()=>installed};
+        window.__hotfixProbe={calls,installed:()=>installed,capacity:"full",installDirs:[]};
         window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener:()=>{}};
         window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:"main"},currentWebview:{label:"main"}},
             transformCallback:fn=>{const id=next++;callbacks.set(id,fn);return id;},unregisterCallback:id=>callbacks.delete(id),
@@ -44,7 +44,14 @@ try{
                 if(name==="plugin:event|listen"){listeners.set(args.event,args.handler);return args.handler;}
                 if(name==="plugin:event|unlisten"){listeners.delete(args.event);return;}
                 if(name==="check_toolchain")return {status:installed?"ready":"not_installed",version:installed?"1.0.1":null,path:installed?"fixture-toolchain":null};
-                if(name==="download_toolchain"){installed=true;return "installed";}
+                if(name==="get_toolchain_storage"){
+                    const full=window.__hotfixProbe.capacity==="full";
+                    return {required_bytes:12*1024**3,
+                        options:["C:/fixture/toolchain","D:/fixture/toolchain"].map((dir,i)=>({install_dir:dir,available_bytes:(!full&&i===1?40:1)*1024**3,sufficient:!full&&i===1,error:null})),
+                        recommended_dir:full?null:"D:/fixture/toolchain",
+                        warning:full?"พื้นที่ไม่พอในทุกไดรฟ์":"ตำแหน่งเดิมมีพื้นที่ไม่พอ เปลี่ยนเป็น D:"};
+                }
+                if(name==="download_toolchain"){window.__hotfixProbe.installDirs.push(args.installDir);installed=true;return "installed";}
                 if(name==="check_esp_idf"){if(!installed)throw new Error("fixture SDK not installed");return "Ready: fixture SDK";}
                 if(name==="get_idf_custom_paths")return {idf_path:"",tools_path:""};
                 if(["get_knowledge_base_files","list_project_files","list_serial_ports"].includes(name))return [];
@@ -59,16 +66,25 @@ try{
     await board.waitFor();
     if(await board.inputValue()!=="kidbright32")throw new Error("Restored experimental target leaked into hotfix");
     if(await board.locator("option").count()!==1)throw new Error("Unexpected board target");
+    await page.getByRole("button",{name:"ใช้ Simulator ก่อน"}).waitFor();
+    if(await page.evaluate(()=>window.__hotfixProbe.calls.includes("download_toolchain")))throw new Error("Unexpected automatic SDK download");
+    await page.getByRole("alert").filter({hasText:"ทุกไดรฟ์"}).waitFor();
+    if(!await page.getByLabel("Install board toolchain").isDisabled())throw new Error("Installer enabled with all volumes full");
+    await page.evaluate(()=>window.__hotfixProbe.capacity="d");
+    await page.getByRole("button",{name:"ตรวจพื้นที่อีกครั้ง"}).click();
+    await page.waitForFunction(()=>document.querySelector('[aria-label="SDK installation location"]').value==="D:/fixture/toolchain");
+    await page.getByLabel("Install board toolchain").click();
     await page.waitForFunction(()=>window.__hotfixProbe.installed(),undefined,{timeout:15000});
     await page.getByRole("button",{name:/Build & Flash/}).waitFor();
     await page.waitForFunction(()=>[...document.querySelectorAll("button")].some(b=>b.textContent.includes("Build & Flash")&&!b.disabled),undefined,{timeout:5000});
     await page.getByText("Ready",{exact:true}).waitFor();
     const calls=await page.evaluate(()=>window.__hotfixProbe.calls);
-    if(calls.filter(n=>n==="download_toolchain").length!==1)throw new Error("Duplicate auto installation");
+    if(calls.filter(n=>n==="download_toolchain").length!==1)throw new Error("Duplicate installation");
+    if(await page.evaluate(()=>JSON.stringify(window.__hotfixProbe.installDirs))!==JSON.stringify(["D:/fixture/toolchain"]))throw new Error("Alternative SDK drive not sent to backend");
     if(calls.lastIndexOf("check_esp_idf")<calls.indexOf("download_toolchain"))throw new Error("SDK status was not refreshed after activation");
     if(calls.some(n=>n.includes("adb")))throw new Error("AI-board IPC invoked");
     if(errors.length||external.length)throw new Error(JSON.stringify({errors,external}));
-    const report={version:"3.7.1",compiled_ui:true,native_ipc_fixture:true,classic_only:true,legacy_board_preference_normalized:true,auto_install_once:true,ready_without_reload:true,missed_progress_event_handled:true,sdk_status_refreshed:true,page_errors:errors,external_requests:external,live_provider:false,real_sdk_installed:false};
+    const report={version:JSON.parse(readFileSync("package.json","utf8")).version,compiled_ui:true,native_ipc_fixture:true,classic_only:true,legacy_board_preference_normalized:true,all_full_blocks_download:true,alternative_drive_selected:true,explicit_install_once:true,ready_without_reload:true,missed_progress_event_handled:true,sdk_status_refreshed:true,page_errors:errors,external_requests:external,live_provider:false,real_sdk_installed:false};
     await mkdir("src-tauri/target",{recursive:true});
     await writeFile("src-tauri/target/hotfix-ui-verification.json",JSON.stringify(report,null,2)+"\n");
     console.log(JSON.stringify(report));

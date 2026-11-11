@@ -1,0 +1,4565 @@
+[
+  {
+    "name": "temperature_to_matrix_negative_and_rounding",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "repeat",
+          "count": 5,
+          "body": [
+            {
+              "op": "number",
+              "value": {
+                "kind": "sensor",
+                "name": "temperature"
+              }
+            },
+            {
+              "op": "delay",
+              "ms": 1
+            }
+          ]
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {
+      "temperature": [
+        -12.5,
+        -0.5,
+        24.49,
+        24.5,
+        42
+      ]
+    }
+  },
+  {
+    "name": "light_threshold_controls_usb_and_out2",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "repeat",
+          "count": 4,
+          "body": [
+            {
+              "op": "if",
+              "condition": {
+                "kind": "binary",
+                "operator": "<",
+                "left": {
+                  "kind": "sensor",
+                  "name": "light"
+                },
+                "right": 50
+              },
+              "then": [
+                {
+                  "op": "output",
+                  "port": "usb",
+                  "value": 1
+                },
+                {
+                  "op": "output",
+                  "port": "out2",
+                  "value": 0
+                }
+              ],
+              "else": [
+                {
+                  "op": "output",
+                  "port": "usb",
+                  "value": 0
+                },
+                {
+                  "op": "output",
+                  "port": "out2",
+                  "value": 1
+                }
+              ]
+            },
+            {
+              "op": "delay",
+              "ms": 1
+            }
+          ]
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {
+      "light": [
+        0,
+        49,
+        50,
+        100
+      ]
+    }
+  },
+  {
+    "name": "two_buttons_and_all_four_digital_inputs",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "repeat",
+          "count": 4,
+          "body": [
+            {
+              "op": "output",
+              "port": "out1",
+              "value": {
+                "kind": "sensor",
+                "name": "s1"
+              }
+            },
+            {
+              "op": "output",
+              "port": "out2",
+              "value": {
+                "kind": "sensor",
+                "name": "s2"
+              }
+            },
+            {
+              "op": "output",
+              "port": "usb",
+              "value": {
+                "kind": "binary",
+                "operator": "||",
+                "left": {
+                  "kind": "sensor",
+                  "name": "input1"
+                },
+                "right": {
+                  "kind": "binary",
+                  "operator": "&&",
+                  "left": {
+                    "kind": "sensor",
+                    "name": "input2"
+                  },
+                  "right": {
+                    "kind": "binary",
+                    "operator": "||",
+                    "left": {
+                      "kind": "sensor",
+                      "name": "input3"
+                    },
+                    "right": {
+                      "kind": "sensor",
+                      "name": "input4"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "op": "delay",
+              "ms": 1
+            }
+          ]
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {
+      "s1": [
+        0,
+        1,
+        1,
+        0
+      ],
+      "s2": [
+        1,
+        0,
+        1,
+        0
+      ],
+      "input1": [
+        0,
+        1,
+        0,
+        0
+      ],
+      "input2": [
+        0,
+        1,
+        1,
+        1
+      ],
+      "input3": [
+        0,
+        0,
+        1,
+        0
+      ],
+      "input4": [
+        0,
+        0,
+        0,
+        1
+      ]
+    }
+  },
+  {
+    "name": "usb_sw1_toggle_edge_and_release",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "set",
+          "name": "last",
+          "value": 0
+        },
+        {
+          "op": "set",
+          "name": "fan",
+          "value": false
+        },
+        {
+          "op": "repeat",
+          "count": 7,
+          "body": [
+            {
+              "op": "set",
+              "name": "pressed",
+              "value": {
+                "kind": "sensor",
+                "name": "s1"
+              }
+            },
+            {
+              "op": "if",
+              "condition": {
+                "kind": "binary",
+                "operator": "&&",
+                "left": {
+                  "kind": "var",
+                  "name": "pressed"
+                },
+                "right": {
+                  "kind": "unary",
+                  "operator": "!",
+                  "value": {
+                    "kind": "var",
+                    "name": "last"
+                  }
+                }
+              },
+              "then": [
+                {
+                  "op": "set",
+                  "name": "fan",
+                  "value": {
+                    "kind": "unary",
+                    "operator": "!",
+                    "value": {
+                      "kind": "var",
+                      "name": "fan"
+                    }
+                  }
+                },
+                {
+                  "op": "output",
+                  "port": "usb",
+                  "value": {
+                    "kind": "var",
+                    "name": "fan"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "set",
+              "name": "last",
+              "value": {
+                "kind": "var",
+                "name": "pressed"
+              }
+            },
+            {
+              "op": "delay",
+              "ms": 1
+            }
+          ]
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {
+      "s1": [
+        0,
+        1,
+        1,
+        0,
+        0,
+        1,
+        0
+      ]
+    }
+  },
+  {
+    "name": "ascii_upper_lower_punctuation_and_clear",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "text",
+          "text": "AaEeZz! 09",
+          "ms": 1
+        },
+        {
+          "op": "clear"
+        },
+        {
+          "op": "matrix_wait"
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {}
+  },
+  {
+    "name": "scroll_right_to_left_with_readable_e",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "scroll",
+          "text": "SW1 Pressed",
+          "ms": 1
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {}
+  },
+  {
+    "name": "all_ascii_glyphs",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "set",
+          "name": "code",
+          "value": 32
+        },
+        {
+          "op": "while",
+          "condition": {
+            "kind": "binary",
+            "operator": "<=",
+            "left": {
+              "kind": "var",
+              "name": "code"
+            },
+            "right": 126
+          },
+          "body": [
+            {
+              "op": "char",
+              "value": {
+                "kind": "var",
+                "name": "code"
+              }
+            },
+            {
+              "op": "set",
+              "name": "code",
+              "value": {
+                "kind": "binary",
+                "operator": "+",
+                "left": {
+                  "kind": "var",
+                  "name": "code"
+                },
+                "right": 1
+              }
+            },
+            {
+              "op": "delay",
+              "ms": 0
+            }
+          ]
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {}
+  },
+  {
+    "name": "bitmap_corners_and_mirror_pattern",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "bitmap",
+          "columns": [
+            129,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            129
+          ]
+        },
+        {
+          "op": "bitmap",
+          "columns": [
+            1,
+            2,
+            4,
+            8,
+            16,
+            32,
+            64,
+            128,
+            1,
+            2,
+            4,
+            8,
+            16,
+            32,
+            64,
+            128
+          ]
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {}
+  },
+  {
+    "name": "buzzer_notes_and_limits",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "volume",
+          "value": 35
+        },
+        {
+          "op": "tone",
+          "hz": 20,
+          "ms": 1
+        },
+        {
+          "op": "tone",
+          "hz": 20000,
+          "ms": 1
+        },
+        {
+          "op": "note",
+          "note": 0,
+          "duration": 4
+        },
+        {
+          "op": "note",
+          "note": 9,
+          "duration": 3
+        },
+        {
+          "op": "note",
+          "note": 36,
+          "duration": 4
+        },
+        {
+          "op": "buzzer_off"
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {}
+  },
+  {
+    "name": "tone_can_overlap_led_ports_and_sensors",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "tone_start",
+          "hz": 1000
+        },
+        {
+          "op": "number",
+          "value": {
+            "kind": "sensor",
+            "name": "temperature"
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": 1
+        },
+        {
+          "op": "delay",
+          "ms": 1
+        },
+        {
+          "op": "volume",
+          "value": 75
+        },
+        {
+          "op": "number",
+          "value": {
+            "kind": "sensor",
+            "name": "volume"
+          }
+        },
+        {
+          "op": "rest",
+          "duration": 4
+        },
+        {
+          "op": "note_start",
+          "note": 4
+        },
+        {
+          "op": "text",
+          "text": "E",
+          "ms": 1
+        },
+        {
+          "op": "buzzer_off"
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": 0
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {
+      "temperature": [
+        25
+      ]
+    }
+  },
+  {
+    "name": "short_circuit_and_operand_evaluation_order",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "set",
+          "name": "b",
+          "value": true
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "var",
+              "name": "b"
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out2",
+          "value": {
+            "kind": "binary",
+            "operator": "==",
+            "left": {
+              "kind": "var",
+              "name": "b"
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "set",
+          "name": "one",
+          "value": {
+            "kind": "binary",
+            "operator": "||",
+            "left": 1,
+            "right": {
+              "kind": "sensor",
+              "name": "temperature"
+            }
+          }
+        },
+        {
+          "op": "set",
+          "name": "zero",
+          "value": {
+            "kind": "binary",
+            "operator": "&&",
+            "left": 0,
+            "right": {
+              "kind": "sensor",
+              "name": "temperature"
+            }
+          }
+        },
+        {
+          "op": "number",
+          "value": {
+            "kind": "binary",
+            "operator": "-",
+            "left": {
+              "kind": "sensor",
+              "name": "temperature"
+            },
+            "right": {
+              "kind": "sensor",
+              "name": "temperature"
+            }
+          }
+        },
+        {
+          "op": "number",
+          "value": {
+            "kind": "binary",
+            "operator": ">>>",
+            "left": -1,
+            "right": 31
+          }
+        },
+        {
+          "op": "number",
+          "value": {
+            "kind": "binary",
+            "operator": ">>",
+            "left": -8,
+            "right": 2
+          }
+        },
+        {
+          "op": "number",
+          "value": {
+            "kind": "binary",
+            "operator": "&",
+            "left": 4294967297,
+            "right": 255
+          }
+        },
+        {
+          "op": "number",
+          "value": {
+            "kind": "unary",
+            "operator": "~",
+            "value": -1
+          }
+        },
+        {
+          "op": "number",
+          "value": {
+            "kind": "binary",
+            "operator": "%",
+            "left": -7,
+            "right": 3
+          }
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {
+      "temperature": [
+        40,
+        15
+      ]
+    }
+  },
+  {
+    "name": "nested_while_repeat_break_and_output_readback",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "set",
+          "name": "double",
+          "value": 0
+        },
+        {
+          "op": "while",
+          "condition": true,
+          "body": [
+            {
+              "op": "repeat",
+              "count": 2,
+              "body": [
+                {
+                  "op": "set",
+                  "name": "double",
+                  "value": {
+                    "kind": "binary",
+                    "operator": "+",
+                    "left": {
+                      "kind": "var",
+                      "name": "double"
+                    },
+                    "right": 1
+                  }
+                },
+                {
+                  "op": "output",
+                  "port": "out1",
+                  "value": {
+                    "kind": "binary",
+                    "operator": "&",
+                    "left": {
+                      "kind": "var",
+                      "name": "double"
+                    },
+                    "right": 1
+                  }
+                },
+                {
+                  "op": "output",
+                  "port": "out2",
+                  "value": {
+                    "kind": "sensor",
+                    "name": "out1"
+                  }
+                },
+                {
+                  "op": "output",
+                  "port": "usb",
+                  "value": {
+                    "kind": "unary",
+                    "operator": "!",
+                    "value": {
+                      "kind": "sensor",
+                      "name": "out2"
+                    }
+                  }
+                },
+                {
+                  "op": "number",
+                  "value": {
+                    "kind": "sensor",
+                    "name": "usb"
+                  }
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "condition": {
+                "kind": "binary",
+                "operator": ">=",
+                "left": {
+                  "kind": "var",
+                  "name": "double"
+                },
+                "right": 4
+              },
+              "then": [
+                {
+                  "op": "break"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {}
+  },
+  {
+    "name": "all_peripherals_one_program",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "tone_start",
+          "hz": 440
+        },
+        {
+          "op": "number",
+          "value": {
+            "kind": "sensor",
+            "name": "temperature"
+          }
+        },
+        {
+          "op": "scroll",
+          "text": "A-Z e",
+          "ms": 1
+        },
+        {
+          "op": "repeat",
+          "count": 2,
+          "body": [
+            {
+              "op": "output",
+              "port": "out1",
+              "value": {
+                "kind": "sensor",
+                "name": "s1"
+              }
+            },
+            {
+              "op": "output",
+              "port": "out2",
+              "value": {
+                "kind": "sensor",
+                "name": "s2"
+              }
+            },
+            {
+              "op": "output",
+              "port": "usb",
+              "value": {
+                "kind": "binary",
+                "operator": ">",
+                "left": {
+                  "kind": "sensor",
+                  "name": "light"
+                },
+                "right": 50
+              }
+            },
+            {
+              "op": "number",
+              "value": {
+                "kind": "binary",
+                "operator": "+",
+                "left": {
+                  "kind": "sensor",
+                  "name": "input1"
+                },
+                "right": {
+                  "kind": "binary",
+                  "operator": "+",
+                  "left": {
+                    "kind": "sensor",
+                    "name": "input2"
+                  },
+                  "right": {
+                    "kind": "binary",
+                    "operator": "+",
+                    "left": {
+                      "kind": "sensor",
+                      "name": "input3"
+                    },
+                    "right": {
+                      "kind": "sensor",
+                      "name": "input4"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "op": "volume",
+          "value": 25
+        },
+        {
+          "op": "delay",
+          "ms": 1
+        },
+        {
+          "op": "buzzer_off"
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {
+      "temperature": [
+        -5.25
+      ],
+      "light": [
+        25,
+        75
+      ],
+      "s1": [
+        0,
+        1
+      ],
+      "s2": [
+        1,
+        0
+      ],
+      "input1": [
+        0,
+        1
+      ],
+      "input2": [
+        1,
+        0
+      ],
+      "input3": [
+        0,
+        1
+      ],
+      "input4": [
+        1,
+        0
+      ]
+    }
+  },
+  {
+    "name": "nonfinite_output_is_rejected",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "output",
+          "port": "usb",
+          "value": {
+            "kind": "binary",
+            "operator": "/",
+            "left": 0,
+            "right": 0
+          }
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {},
+    "error": true
+  },
+  {
+    "name": "out_of_range_character_is_rejected",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "char",
+          "value": {
+            "kind": "sensor",
+            "name": "temperature"
+          }
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {
+      "temperature": [
+        127
+      ]
+    },
+    "error": true
+  },
+  {
+    "name": "out_of_range_number_is_rejected",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "number",
+          "value": {
+            "kind": "sensor",
+            "name": "temperature"
+          }
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {
+      "temperature": [
+        10000
+      ]
+    },
+    "error": true
+  },
+  {
+    "name": "runtime_tone_bounds_are_checked",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "tone_start",
+          "hz": {
+            "kind": "binary",
+            "operator": "+",
+            "left": 20000,
+            "right": 1
+          }
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {},
+    "error": true
+  },
+  {
+    "name": "runtime_volume_bounds_are_checked",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "volume",
+          "value": {
+            "kind": "binary",
+            "operator": "+",
+            "left": 100,
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": 1
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {},
+    "error": true
+  },
+  {
+    "name": "operators_truthiness_and_int32_boundaries",
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "+",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": -4294967296
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "+",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": -2147483617
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "+",
+              "left": -1,
+              "right": 32
+            },
+            "right": 31
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "+",
+              "left": 0,
+              "right": 0
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "+",
+              "left": 1,
+              "right": 33
+            },
+            "right": 34
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "+",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": 2147483648
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "+",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": 4294967297
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "+",
+              "left": true,
+              "right": 1
+            },
+            "right": 2
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "+",
+              "left": false,
+              "right": -1
+            },
+            "right": -1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "-",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": -4294967298
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "-",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": -2147483679
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "-",
+              "left": -1,
+              "right": 32
+            },
+            "right": -33
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "-",
+              "left": 0,
+              "right": 0
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "-",
+              "left": 1,
+              "right": 33
+            },
+            "right": -32
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "-",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": 2147483646
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "-",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": 4294967297
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "-",
+              "left": true,
+              "right": 1
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "-",
+              "left": false,
+              "right": -1
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "*",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": -4294967297
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "*",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": -66571993088
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "*",
+              "left": -1,
+              "right": 32
+            },
+            "right": -32
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "*",
+              "left": 0,
+              "right": 0
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "*",
+              "left": 1,
+              "right": 33
+            },
+            "right": 33
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "*",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": 2147483647
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "*",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "*",
+              "left": true,
+              "right": 1
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "*",
+              "left": false,
+              "right": -1
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "/",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": -4294967297
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "/",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": -69273666.06451613
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "/",
+              "left": -1,
+              "right": 32
+            },
+            "right": -0.03125
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "!==",
+            "left": {
+              "kind": "binary",
+              "operator": "/",
+              "left": 0,
+              "right": 0
+            },
+            "right": {
+              "kind": "binary",
+              "operator": "/",
+              "left": 0,
+              "right": 0
+            }
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "/",
+              "left": 1,
+              "right": 33
+            },
+            "right": 0.030303030303030304
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "/",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": 2147483647
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": ">",
+            "left": {
+              "kind": "binary",
+              "operator": "/",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": 1e+300
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "/",
+              "left": true,
+              "right": 1
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "/",
+              "left": false,
+              "right": -1
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "%",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "%",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": -2
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "%",
+              "left": -1,
+              "right": 32
+            },
+            "right": -1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "!==",
+            "left": {
+              "kind": "binary",
+              "operator": "%",
+              "left": 0,
+              "right": 0
+            },
+            "right": {
+              "kind": "binary",
+              "operator": "%",
+              "left": 0,
+              "right": 0
+            }
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "%",
+              "left": 1,
+              "right": 33
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "%",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "!==",
+            "left": {
+              "kind": "binary",
+              "operator": "%",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": {
+              "kind": "binary",
+              "operator": "%",
+              "left": 4294967297,
+              "right": 0
+            }
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "%",
+              "left": true,
+              "right": 1
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "%",
+              "left": false,
+              "right": -1
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<",
+              "left": -1,
+              "right": 32
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<",
+              "left": 0,
+              "right": 0
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<",
+              "left": 1,
+              "right": 33
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<",
+              "left": true,
+              "right": 1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<",
+              "left": false,
+              "right": -1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<=",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<=",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<=",
+              "left": -1,
+              "right": 32
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<=",
+              "left": 0,
+              "right": 0
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<=",
+              "left": 1,
+              "right": 33
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<=",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<=",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<=",
+              "left": true,
+              "right": 1
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<=",
+              "left": false,
+              "right": -1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">",
+              "left": -1,
+              "right": 32
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">",
+              "left": 0,
+              "right": 0
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">",
+              "left": 1,
+              "right": 33
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">",
+              "left": true,
+              "right": 1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">",
+              "left": false,
+              "right": -1
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">=",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">=",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">=",
+              "left": -1,
+              "right": 32
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">=",
+              "left": 0,
+              "right": 0
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">=",
+              "left": 1,
+              "right": 33
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">=",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">=",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">=",
+              "left": true,
+              "right": 1
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">=",
+              "left": false,
+              "right": -1
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "==",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "==",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "==",
+              "left": -1,
+              "right": 32
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "==",
+              "left": 0,
+              "right": 0
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "==",
+              "left": 1,
+              "right": 33
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "==",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "==",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "==",
+              "left": true,
+              "right": 1
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "==",
+              "left": false,
+              "right": -1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!=",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!=",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!=",
+              "left": -1,
+              "right": 32
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!=",
+              "left": 0,
+              "right": 0
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!=",
+              "left": 1,
+              "right": 33
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!=",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!=",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!=",
+              "left": true,
+              "right": 1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!=",
+              "left": false,
+              "right": -1
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "===",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "===",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "===",
+              "left": -1,
+              "right": 32
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "===",
+              "left": 0,
+              "right": 0
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "===",
+              "left": 1,
+              "right": 33
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "===",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "===",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "===",
+              "left": true,
+              "right": 1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "===",
+              "left": false,
+              "right": -1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!==",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!==",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!==",
+              "left": -1,
+              "right": 32
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!==",
+              "left": 0,
+              "right": 0
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!==",
+              "left": 1,
+              "right": 33
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!==",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!==",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!==",
+              "left": true,
+              "right": 1
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "!==",
+              "left": false,
+              "right": -1
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&",
+              "left": -1,
+              "right": 32
+            },
+            "right": 32
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&",
+              "left": 0,
+              "right": 0
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&",
+              "left": 1,
+              "right": 33
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&",
+              "left": true,
+              "right": 1
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&",
+              "left": false,
+              "right": -1
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "|",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": -1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "|",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": -2147483617
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "|",
+              "left": -1,
+              "right": 32
+            },
+            "right": -1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "|",
+              "left": 0,
+              "right": 0
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "|",
+              "left": 1,
+              "right": 33
+            },
+            "right": 33
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "|",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": 2147483647
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "|",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "|",
+              "left": true,
+              "right": 1
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "|",
+              "left": false,
+              "right": -1
+            },
+            "right": -1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "^",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": -2
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "^",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": -2147483617
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "^",
+              "left": -1,
+              "right": 32
+            },
+            "right": -33
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "^",
+              "left": 0,
+              "right": 0
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "^",
+              "left": 1,
+              "right": 33
+            },
+            "right": 32
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "^",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": 2147483646
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "^",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "^",
+              "left": true,
+              "right": 1
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "^",
+              "left": false,
+              "right": -1
+            },
+            "right": -1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<<",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": -2
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<<",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<<",
+              "left": -1,
+              "right": 32
+            },
+            "right": -1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<<",
+              "left": 0,
+              "right": 0
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<<",
+              "left": 1,
+              "right": 33
+            },
+            "right": 2
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<<",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": -2
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<<",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<<",
+              "left": true,
+              "right": 1
+            },
+            "right": 2
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "<<",
+              "left": false,
+              "right": -1
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": -1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": -1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>",
+              "left": -1,
+              "right": 32
+            },
+            "right": -1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>",
+              "left": 0,
+              "right": 0
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>",
+              "left": 1,
+              "right": 33
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": 1073741823
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>",
+              "left": true,
+              "right": 1
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>",
+              "left": false,
+              "right": -1
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>>",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": 2147483647
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>>",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>>",
+              "left": -1,
+              "right": 32
+            },
+            "right": 4294967295
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>>",
+              "left": 0,
+              "right": 0
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>>",
+              "left": 1,
+              "right": 33
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>>",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": 1073741823
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>>",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>>",
+              "left": true,
+              "right": 1
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": ">>>",
+              "left": false,
+              "right": -1
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&&",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&&",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": 31
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&&",
+              "left": -1,
+              "right": 32
+            },
+            "right": 32
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&&",
+              "left": 0,
+              "right": 0
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&&",
+              "left": 1,
+              "right": 33
+            },
+            "right": 33
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&&",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&&",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&&",
+              "left": true,
+              "right": 1
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "&&",
+              "left": false,
+              "right": -1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "||",
+              "left": -4294967297,
+              "right": 1
+            },
+            "right": -4294967297
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "||",
+              "left": -2147483648,
+              "right": 31
+            },
+            "right": -2147483648
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "||",
+              "left": -1,
+              "right": 32
+            },
+            "right": -1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "||",
+              "left": 0,
+              "right": 0
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "||",
+              "left": 1,
+              "right": 33
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "||",
+              "left": 2147483647,
+              "right": 1
+            },
+            "right": 2147483647
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "||",
+              "left": 4294967297,
+              "right": 0
+            },
+            "right": 4294967297
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "||",
+              "left": true,
+              "right": 1
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "binary",
+              "operator": "||",
+              "left": false,
+              "right": -1
+            },
+            "right": -1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "!",
+              "value": -4294967297
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "~",
+              "value": -4294967297
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "+",
+              "value": -4294967297
+            },
+            "right": -4294967297
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "-",
+              "value": -4294967297
+            },
+            "right": 4294967297
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "!",
+              "value": -2147483648
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "~",
+              "value": -2147483648
+            },
+            "right": 2147483647
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "+",
+              "value": -2147483648
+            },
+            "right": -2147483648
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "-",
+              "value": -2147483648
+            },
+            "right": 2147483648
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "!",
+              "value": -1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "~",
+              "value": -1
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "+",
+              "value": -1
+            },
+            "right": -1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "-",
+              "value": -1
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "!",
+              "value": 0
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "~",
+              "value": 0
+            },
+            "right": -1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "+",
+              "value": 0
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "-",
+              "value": 0
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "!",
+              "value": 1
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "~",
+              "value": 1
+            },
+            "right": -2
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "+",
+              "value": 1
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "-",
+              "value": 1
+            },
+            "right": -1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "!",
+              "value": 4294967297
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "~",
+              "value": 4294967297
+            },
+            "right": -2
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "+",
+              "value": 4294967297
+            },
+            "right": 4294967297
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "-",
+              "value": 4294967297
+            },
+            "right": -4294967297
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "!",
+              "value": true
+            },
+            "right": false
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "~",
+              "value": true
+            },
+            "right": -2
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "+",
+              "value": true
+            },
+            "right": 1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "-",
+              "value": true
+            },
+            "right": -1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "!",
+              "value": false
+            },
+            "right": true
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "~",
+              "value": false
+            },
+            "right": -1
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "+",
+              "value": false
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out1",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "unary",
+              "operator": "-",
+              "value": false
+            },
+            "right": 0
+          }
+        },
+        {
+          "op": "output",
+          "port": "out2",
+          "value": {
+            "kind": "binary",
+            "operator": "===",
+            "left": {
+              "kind": "sensor",
+              "name": "matrix_idle"
+            },
+            "right": true
+          }
+        }
+      ],
+      "unsupported": []
+    },
+    "inputs": {}
+  },
+  {
+    "name": "analog_all_channels_light_and_digital_are_independent",
+    "hardware": {
+      "profile": "kidbright32_v15_analog_bypass"
+    },
+    "inputs": {
+      "analog1": [
+        0,
+        2048,
+        4095
+      ],
+      "analog2": [
+        4095,
+        1024,
+        0
+      ],
+      "analog3": [
+        100,
+        200,
+        300
+      ],
+      "analog4": [
+        400,
+        500,
+        600
+      ],
+      "light": [
+        25,
+        75,
+        50
+      ]
+    },
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "repeat",
+          "count": 3,
+          "body": [
+            {
+              "op": "number",
+              "value": {
+                "kind": "sensor",
+                "name": "analog1"
+              }
+            },
+            {
+              "op": "number",
+              "value": {
+                "kind": "sensor",
+                "name": "analog2"
+              }
+            },
+            {
+              "op": "number",
+              "value": {
+                "kind": "sensor",
+                "name": "analog3"
+              }
+            },
+            {
+              "op": "number",
+              "value": {
+                "kind": "sensor",
+                "name": "analog4"
+              }
+            },
+            {
+              "op": "number",
+              "value": {
+                "kind": "sensor",
+                "name": "light"
+              }
+            },
+            {
+              "op": "delay",
+              "ms": 100
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "analog_threshold_with_digital_button_buzzer_and_usb",
+    "hardware": {
+      "profile": "kidbright32_v15_analog_bypass"
+    },
+    "inputs": {
+      "analog1": [
+        0,
+        3000,
+        2048,
+        100
+      ],
+      "input2": [
+        1,
+        0,
+        1,
+        0
+      ]
+    },
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "repeat",
+          "count": 4,
+          "body": [
+            {
+              "op": "set",
+              "name": "raw",
+              "value": {
+                "kind": "sensor",
+                "name": "analog1"
+              }
+            },
+            {
+              "op": "number",
+              "value": {
+                "kind": "var",
+                "name": "raw"
+              }
+            },
+            {
+              "op": "output",
+              "port": "usb",
+              "value": {
+                "kind": "binary",
+                "operator": ">",
+                "left": {
+                  "kind": "var",
+                  "name": "raw"
+                },
+                "right": 2000
+              }
+            },
+            {
+              "op": "output",
+              "port": "out2",
+              "value": {
+                "kind": "sensor",
+                "name": "input2"
+              }
+            },
+            {
+              "op": "if",
+              "condition": {
+                "kind": "binary",
+                "operator": ">",
+                "left": {
+                  "kind": "var",
+                  "name": "raw"
+                },
+                "right": 2000
+              },
+              "then": [
+                {
+                  "op": "tone",
+                  "hz": 1000,
+                  "ms": 100
+                }
+              ]
+            },
+            {
+              "op": "delay",
+              "ms": 100
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "analog_fraction_matches_reference_truncation",
+    "hardware": {
+      "profile": "kidbright32_v15_analog_bypass"
+    },
+    "inputs": {
+      "analog1": [
+        3.75
+      ]
+    },
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "number",
+          "value": {
+            "kind": "sensor",
+            "name": "analog1"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "analog_out_of_range_is_an_error",
+    "hardware": {
+      "profile": "kidbright32_v15_analog_bypass"
+    },
+    "inputs": {
+      "analog1": [
+        4096
+      ]
+    },
+    "error": true,
+    "program": {
+      "version": 1,
+      "steps": [
+        {
+          "op": "number",
+          "value": {
+            "kind": "sensor",
+            "name": "analog1"
+          }
+        }
+      ]
+    }
+  }
+]

@@ -1,0 +1,7 @@
+# Preserve the supplied simulator reference assets byte-for-byte on every OS.
+# Original vendor whitespace is retained with the original license headers.
+simulator-assets/UnityBuild/** -text -whitespace
+simulator-assets/JS-Interpreter/** -text -whitespace
+
+# Bash repair launchers must remain runnable after a Windows checkout.
+scripts/*.command text eol=lf

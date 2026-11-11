@@ -1,7 +1,7 @@
 name: Build Windows Installer
 on:
   push:
-    branches: [ hotfix/3.7.1 ]
+    tags: [ 'v*' ]
   workflow_dispatch:
 
 permissions:
@@ -90,6 +90,7 @@ jobs:
         run: |
           $json = Get-Content "main_repo/src-tauri/tauri.conf.json" | ConvertFrom-Json
           $version = $json.version
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "v$version") { throw "Tag and app version do not match" }
           echo "VERSION=$version" >> $env:GITHUB_OUTPUT
           echo "TAG=v$version" >> $env:GITHUB_OUTPUT
           Write-Host "Version: $version"
@@ -162,8 +163,8 @@ jobs:
           tag_name: ${{ steps.get_version.outputs.TAG }}
           target_commitish: ${{ github.sha }}
           make_latest: false
-          name: 'vibeKidbright ${{ steps.get_version.outputs.TAG }} (Windows)'
-          body: 'ดาวน์โหลดไฟล์ .exe ด้านล่างเพื่อติดตั้งบน Windows'
+          name: 'VibeKidbright IDE ${{ steps.get_version.outputs.TAG }}'
+          body_path: main_repo/docs/releases/${{ steps.get_version.outputs.VERSION }}.md
           draft: true
           prerelease: false
           files: |

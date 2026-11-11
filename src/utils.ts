@@ -49,7 +49,7 @@ export function getBasename(path: string): string {
  * Normalise a file path for comparison: backslashes → forward slashes, lower-case.
  */
 export function normPath(path: string): string {
-  return path.replace(/\\/g, '/').toLowerCase();
+  return path.replace(/\\/g, '/').replace(/^\/\/\?\/UNC\//i, '//').replace(/^\/\/\?\//, '').toLowerCase();
 }
 
 /**

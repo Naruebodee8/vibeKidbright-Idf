@@ -1,15 +1,15 @@
 import {readFileSync, existsSync, readdirSync} from "node:fs";
 import {strict as assert} from "node:assert";
-const read=p=>readFileSync(p,"utf8");
+const read=p=>readFileSync(p,"utf8").replace(/\r\n/g,"\n");
 const pkg=JSON.parse(read("package.json"));
 const lock=JSON.parse(read("package-lock.json"));
 const tauri=JSON.parse(read("src-tauri/tauri.conf.json"));
-assert.equal(pkg.version,"3.7.1");
+assert.match(pkg.version,/^\d+\.\d+\.\d+$/);
 assert.equal(lock.version,pkg.version);
 assert.equal(lock.packages[""].version,pkg.version);
 assert.equal(tauri.version,pkg.version);
-assert.match(read("src-tauri/Cargo.toml"), /version = "3\.7\.1"/);
-assert.match(read("src-tauri/Cargo.lock"), /name = "vibe-kidbright"\nversion = "3\.7\.1"/);
+assert.equal(read("src-tauri/Cargo.toml").match(/^version = "([^"]+)"/m)?.[1],pkg.version);
+assert.equal(read("src-tauri/Cargo.lock").match(/name = "vibe-kidbright"\nversion = "([^"]+)"/)?.[1],pkg.version);
 assert.equal(tauri.bundle.resources["../resources/knowledge_base"],"knowledge_base");
 assert.ok(!read("src/App.tsx").includes('<option value="miuaiplus">'));
 assert.ok(!read("src/App.tsx").includes('localStorage.getItem("vibe-selected-board")'));
@@ -28,8 +28,8 @@ const sync=directory=>{
 sync("");
 for (const workflow of ["build-windows.yml","build-macos.yml"]){
     const text=read(`.github/workflows/${workflow}`);
-    assert.match(text,/branches: \[ hotfix\/3\.7\.1 \]/);
+    assert.match(text,/tags: \[ 'v\*' \]/);
     assert.match(text,/make_latest: false/);
     assert.match(text,/target_commitish: \$\{\{ github.sha \}\}/);
 }
-console.log("3.7.1 versions, classic target, KB resources and isolated release workflows verified.");
+console.log(`${pkg.version} versions, classic target, KB resources and tag-triggered release workflows verified.`);
